@@ -1,0 +1,1863 @@
+---
+title: "Investigate data"
+author: "Christelle Colin-Leitzinger"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+    theme: united
+    highlight: pygments
+    df_print: paged
+    code_folding: hide
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE,
+                      cache = FALSE,
+                      fig.align='center'
+                      )
+```
+
+```{r library, echo = FALSE}
+library(tidyverse)
+library(labelled)
+library(gtsummary)
+library(survminer)
+library(survival)
+library(car)
+theme_gtsummary_compact()
+theme_set(theme_classic())
+```
+
+```{r load}
+path_raw <- fs::path("","Volumes","Peres_Research", "AACES")
+
+spatial_data <- 
+  read_rds(paste0(here::here(), 
+                  "/data/raw_data",
+                  # path_raw, "/Panel 2 Immune Markers/Survival Analysis",
+                  "/compartment_spatial_dataset_06Mar2026.rds")) %>% 
+  janitor::clean_names()
+# immune_subtypes <- 
+#   read_csv(paste0(path_raw, 
+#                   "/Panel 2 Immune Markers/Clinical data",
+#                   "/panel2_bothphases_11072024.csv")) %>% 
+#   select(suid, subtype)
+# race_dat <- 
+#   read_csv(paste0(path_raw, 
+#                   "/AACES_NCOCS_data/clinical data/processed_data",
+#                   "/case_ctrl_data_2024-08-16.csv")) %>% 
+#   select(suid, site, race)
+```
+
+```{r fix grade}
+spatial_data <- spatial_data %>% 
+  # collapse histotype/grade, assume missing grade is HIGH
+  mutate(histo_grade = case_when(histotype2=="high-grade serous" ~ histotype2,
+                                 grade_cat == "Low grade"   ~ "other, low-grade",
+                                 TRUE  ~ "other, high-grade"))
+```
+
+```{r Labeling data}
+var_label(spatial_data) <- list(refage = "Patient age",
+                                diagyear = "Diagnosis Year", 
+                                histotype = "Histotype",
+                                histotype2 = "Histotype, collapsed", 
+                                histo_grade = "Histotype/Grade",
+                                # sex = "Sex",
+                                # race_cr_src_desc_1	 = "Race (raw)",
+                                # race = "Race", ethnicity_src_desc = "Ethnicity",
+                                # histology_desc = "Histology",
+                                # bmi = "BMI (continuous)",
+                                # bmi_cat = "BMI (categorical)",
+                                grade_cat = "Grade",
+                                new_dblkstat_treat_ca125 = "debulking status",
+                                
+                                int_to_event_mos = "Follow-up time from interview (months)",
+                                vital_status_fin = "Vital Status"#,
+                                # os_event = "Deaths"
+)
+```
+
+```{r}
+# interface_cd3plus_cells
+# interface_percent_cd3plus_cells
+# stroma_cd3_cells
+# stroma_percent_cd3_cells
+# tumor_cd3_cells
+# tumor_percent_cd3_cells
+# 
+# "interface_tumor_cells"                                    
+#  [21] "interface_stroma_cells"                                    "interface_cells"
+# 
+# "stroma_tumor_cells"                                        "stroma_stroma_cells"                                      
+#  [57] "stroma_total_cells"
+# 
+# "tumor_tumor_cells"                                        
+#  [91] "tumor_stroma_cells"                                        "tumor_total_cells"
+# 
+# [109] "boundary_length"
+# 
+# [111] "interface_cd3plus_do_ce_k_border"                          
+# "tumor_cd3plus_do_ce_k_border"                             
+# [129] "stroma_cd3plus_do_ce_k_border"                                   
+# [137] "cd3 high/low"                                              "cd3+ cd8+ high/low"                                       
+# [139] "Stroma cd3 high/low"                                       "Stroma cd3+ cd8+ high/low"                                
+# [141] "Interface cd3 high/low"                                    "Interface cd3+ cd8+ high/low"
+```
+
+```{r}
+spatial_data <- spatial_data %>% 
+  select(suid, 
+         contains("percent_"),
+         # interface_cd3plus_cells,
+         # interface_percent_cd3plus_cells,
+         # stroma_cd3_cells, stroma_percent_cd3_cells,
+         tumor_cd3_cells, tumor_cd3plus_cd8plus_cells,
+         # tumor_percent_cd3_cells,
+         ends_with("do_ce_k_border"),
+         
+         interfacekernel_tumorhalo_cells = interface_tumor_cells,
+         interfacekernel_stromahalo_cells = interface_stroma_cells, 
+         interface_total_cells = interface_cells,
+         
+         stromakernel_tumorhalo_cells = stroma_tumor_cells, 
+         stromakernel_stromahalo_cells = stroma_stroma_cells,
+         stroma_total_cells,
+         
+         tumorkernel_tumorhalo_cells = tumor_tumor_cells,
+         tumorkernel_stromahalo_cells = tumor_stroma_cells, 
+         tumor_total_cells,
+         
+         boundary_length,
+         
+         tumor_cd3_high_low = cd3_high_low, tumor_cd3_cd8_high_low = cd3_cd8_high_low,
+         stroma_cd3_high_low, stroma_cd3_cd8_high_low,
+         interface_cd3_high_low, interface_cd3_cd8_high_low,
+         
+         tumor_cd3_cells, tumor_cd3plus_cd8plus_cells, tumor_cd3plus_cd8minus_cells, 
+         stroma_cd3_cells, stroma_cd3plus_cd8plus_cells, stroma_cd3plus_cd8minus_cells, 
+         set : ncol(.)
+  ) %>% 
+  mutate(across(c(ends_with("_high_low"), -contains("cd8")), 
+                ~ factor(., levels = 
+                           c("Low (<=2%)", "High (>2%)")))) %>% 
+  mutate(across(c(ends_with("_high_low") & contains("cd8")), 
+                ~ factor(., levels = 
+                           c("Low (<=1%)", "High (>1%)")))) %>% 
+  mutate(across(c(contains("tumor") & contains("percent"), 
+                  contains("stroma") & contains("percent"),
+                  contains("tumor") & contains("do_ce_k_border"), 
+                  contains("stroma") & contains("do_ce_k_border"),
+                  "interface_cd3plus_do_ce_k_border", "interface_cd3plus_cd8plus_do_ce_k_border"
+  ), ~ . / sd(., na.rm = TRUE) , .names = "{.col}_sdhr"))
+```
+
+
+# Inclusion
+```{r}
+spatial_data <- spatial_data %>% 
+  filter(phase == 1 & #sample_type=="Compartment" & 
+           (neoadj_treat != "yes" | is.na(neoadj_treat)))
+```
+
+
+
+
+
+
+# Data available
+```{r}
+colnames(spatial_data)[2:92]
+```
+
+
+
+# I. Patient characteristics
+```{r Patient characteristics}
+spatial_data %>% 
+  select(refage, diagyear, stage_cat, grade, grade_cat, behavior, 
+         histotype, histotype2, histo_grade,
+         subtype, new_dblkstat_treat_ca125, vital_status_fin, int_to_event_mos) %>%
+  tbl_summary() %>%
+  bold_labels() %>%
+  modify_header(label ~ "**Patient characteristics**")
+```
+
+```{r reset stage_cat}
+spatial_data <- spatial_data %>% 
+  mutate(stage_cat = case_when(
+    is.na(stage_cat)                  ~ "Late", 
+    TRUE                              ~ stage_cat)) #%>% 
+  # set_variable_labels(stage_cat="Stage")
+```
+
+```{r}
+spatial_data %>% 
+  select(stage_cat) %>%
+  tbl_summary() %>%
+  bold_labels() 
+```
+
+
+
+
+# II. Immune abundance
+## A. Distributions
+```{r Quick look at immune abundance}
+tbl1 <- spatial_data %>% 
+  select(boundary_length) %>% 
+  tbl_summary() %>%
+  bold_labels() %>%
+  modify_header(label ~ "**Immune abundance**")
+tbl2 <- spatial_data %>% 
+  select(starts_with("tumor_percent_"), 
+         starts_with("tumorkernel_"),
+         tumor_total_cells, 
+         -ends_with("_sdhr")) %>% 
+  tbl_summary() %>%
+  bold_labels()
+tbl3 <- spatial_data %>% 
+  select(starts_with("stroma_percent_"),
+         starts_with("stromakernel_"),
+         stroma_total_cells, 
+         -ends_with("_sdhr")) %>% 
+  tbl_summary() %>%
+  bold_labels()
+tbl4 <- spatial_data %>% 
+  select(starts_with("interface_percent_"),
+         starts_with("interfacekernel_"),
+         interface_total_cells) %>% 
+  tbl_summary() %>%
+  bold_labels()
+
+tbl_stack(list(tbl1, tbl2, tbl3, tbl4), group_header = c("Boundary", "Tumor",
+                                                         "Stroma", "Interface")) %>% 
+  modify_footnote_header(
+    footnote = "**Zero tumor cells from HALO were categorized as stroma using Kernel <br>
+    Zero stroma cells from HALO were categorized as tumor using Kernel**",
+    columns = all_stat_cols(),
+    replace = FALSE
+  ) %>% 
+  as_gt() %>%
+  gt::tab_options(row_group.border.top.color = "black",
+                  row_group.border.top.width = 3,
+                  row_group.border.bottom.color = "darkgrey",
+                  row_group.font.size = 15,
+                  row_group.font.weight = "bold",
+                  row_group.text_transform = "uppercase",
+                  row_group.background.color = "grey")
+```
+
+```{r}
+spatial_data %>% 
+  select(suid, contains("percent_"),
+         -c(contains("tim3"), contains("pd1"), contains("minus"), 
+            ends_with("_sdhr"))) %>% 
+  pivot_longer(cols = -c(suid), 
+               names_to = "immune_cell") %>% 
+  mutate(compartment = str_match(immune_cell, "(tumor|stroma|interface)_*")[,2],
+         compartment = factor(compartment, levels = c("tumor", "stroma", "interface"))) %>% 
+  mutate(cell = str_remove_all(immune_cell, "tumor_|stroma_|interface_|percent_|_cells|plus")) %>% 
+  mutate(unit = "percent") %>% 
+  ggplot(aes(y = value, x = unit, fill = compartment)) + 
+  geom_violin(alpha = 0.5) +
+  ggtitle("Compartment differences in immune cell abundance")+
+  labs(x = "", y = "Immune cells (%)", fill = "Compartment")+
+  facet_wrap(. ~ cell, scales = "free")
+
+
+library(ggridges)
+spatial_data %>% 
+  select(suid, contains("percent_"),
+         -c(contains("tim3"), contains("pd1"), contains("minus"), 
+            ends_with("_sdhr"))) %>% 
+  pivot_longer(cols = -c(suid), 
+               names_to = "immune_cell") %>% 
+  mutate(compartment = str_match(immune_cell, "(tumor|stroma|interface)_*")[,2],
+         compartment = factor(compartment, levels = c("interface", "stroma", "tumor"))) %>% 
+  mutate(cell = str_remove_all(immune_cell, "tumor_|stroma_|interface_|percent_|_cells|plus")) %>% 
+  
+
+  ggplot(aes(x = value, y = compartment, fill = cell)) +
+  geom_density_ridges(alpha=0.2, panel_scaling = TRUE) +
+  theme_ridges()+
+  theme(#axis.title.y = element_blank(),
+        #axis.text.y = element_blank(),
+        panel.spacing = unit(0.1, "lines"),
+        # strip.text.x = element_text(size = 8),
+        legend.title = element_blank(),
+        legend.position = "bottom"
+  )+
+  scale_y_discrete(expand = c(0, 0.1))+
+  facet_wrap(~ cell, nrow = 1, scales = "free_x")
+  
+
+spatial_data %>% 
+  select(suid, contains("percent_"),
+         -c(contains("tim3"), contains("pd1"), contains("minus"), 
+         ends_with("_sdhr"))) %>% 
+  pivot_longer(cols = -c(suid), 
+               names_to = "immune_cell") %>% 
+  mutate(compartment = str_match(immune_cell, "(tumor|stroma|interface)_*")[,2],
+         compartment = factor(compartment, levels = c("interface", "stroma", "tumor"))) %>% 
+  mutate(cell = str_remove_all(immune_cell, "tumor_|stroma_|interface_|percent_|_cells|plus")) %>% 
+  ggplot(aes(x = value, y = compartment, fill = cell)) +
+  geom_density_ridges(alpha=0.2, panel_scaling = TRUE) +
+  theme_ridges()+
+  theme(#axis.title.y = element_blank(),
+        #axis.text.y = element_blank(),
+        panel.spacing = unit(0.1, "lines"),
+        # strip.text.x = element_text(size = 8),
+        legend.title = element_blank(),
+        legend.position = "bottom"
+  )+
+  xlim(0,40)+
+  scale_y_discrete(expand = c(0, 0.1))+
+  facet_wrap(~ cell, nrow = 1)
+```
+
+## B. HR
+Increased immune cell abundance is associated with poorer survival when using 1-SD normalization or categorical variables. 
+```{r}
+tbl_uvregression(
+  spatial_data %>% select(int_to_event_mos, vital_status_fin,
+                          contains("percent") & contains("_sdhr"),
+                          contains("high_low")),
+  method = coxph,
+  y = Surv(time = int_to_event_mos, event = vital_status_fin),
+  exponentiate = TRUE#,
+  # include = c("tumor_percent_cd3_cells_sdhr", "tumor_percent_cd3plus_cd8plus_cells_sdhr", 
+  #             "stroma_percent_cd3_cells_sdhr", "stroma_percent_cd3plus_cd8plus_cells_sdhr", 
+  #             "interface_percent_cd3plus_cells_sdhr", "interface_percent_cd3plus_cd8plus_cells_sdhr",
+  #             "tumor_cd3_high_low", "tumor_cd3_cd8_high_low", 
+  #             "stroma_cd3_high_low", "stroma_cd3_cd8_high_low", 
+  #             "interface_cd3_high_low", "interface_cd3_cd8_high_low"  )
+) %>%
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**UVA**")
+```
+
+## C. HGSOC
+Just checking if i get the same Ns as Brett
+```{r}
+hgsoc_data <- spatial_data %>% 
+  filter(histotype2=="high-grade serous")
+
+hgsoc_data %>% 
+  select(tumor_percent_cd3_cells) %>% 
+  tbl_summary() %>%
+  bold_labels()
+```
+
+# III. Spatial clustering
+## A. Distributions
+```{r Spatial clustering}
+tbl1 <- spatial_data %>% 
+  select(starts_with("tumor_") & ends_with("_do_ce_k_border"), vital_status_fin) %>% 
+  tbl_summary(by = vital_status_fin) %>%
+  bold_labels() %>% 
+  add_p() %>% bold_p() %>% add_overall() %>% 
+  modify_spanning_header(c(stat_1, stat_2) ~ "**Death**")
+tbl2 <- spatial_data %>% 
+  select(starts_with("stroma_") & ends_with("_do_ce_k_border"), vital_status_fin) %>% 
+  tbl_summary(by = vital_status_fin) %>%
+  bold_labels() %>% 
+  add_p() %>% bold_p() %>% add_overall()
+tbl3 <- spatial_data %>% 
+  select(starts_with("interface_") & ends_with("_do_ce_k_border"), vital_status_fin) %>% 
+  tbl_summary(by = vital_status_fin) %>%
+  bold_labels() %>% 
+  add_p() %>% bold_p() %>% add_overall()
+
+tbl_stack(list(tbl1, tbl2, tbl3), group_header = c("Tumor",
+                                                   "Stroma", "Interface")) %>% 
+  as_gt() %>%
+  gt::tab_options(row_group.border.top.color = "black",
+                  row_group.border.top.width = 3,
+                  row_group.border.bottom.color = "darkgrey",
+                  row_group.font.size = 15,
+                  row_group.font.weight = "bold",
+                  row_group.text_transform = "uppercase",
+                  row_group.background.color = "grey")
+
+```
+
+```{r}
+spatial_data %>% 
+  select(suid, ends_with("_do_ce_k_border"),
+         -c(contains("tim3"), contains("pd1"), contains("minus"))) %>% 
+  pivot_longer(cols = -c(suid), 
+               names_to = "immune_cell") %>% 
+  mutate(compartment = str_match(immune_cell, "(tumor|stroma|interface)_*")[,2],
+         compartment = factor(compartment, levels = c("tumor", "stroma", "interface"))) %>% 
+  mutate(cell = str_remove_all(immune_cell, "tumor_|stroma_|interface_|_do_ce_k_border|_cells|plus")) %>% 
+  mutate(unit = "ripley") %>% 
+  ggplot(aes(y = value, x = unit, fill = compartment)) + 
+  geom_violin(alpha = 0.5) +
+  ggtitle("Compartment differences in immune cell clustering")+
+  labs(x = "", y = "Ripley's K", fill = "Compartment")+
+  facet_wrap(. ~ cell, scales = "free")
+
+
+library(ggridges)
+spatial_data %>% 
+  select(suid, ends_with("_do_ce_k_border"),
+         -c(contains("tim3"), contains("pd1"), contains("minus"))) %>% 
+  pivot_longer(cols = -c(suid), 
+               names_to = "immune_cell") %>% 
+  mutate(compartment = str_match(immune_cell, "(tumor|stroma|interface)_*")[,2],
+         compartment = factor(compartment, levels = c("interface", "stroma", "tumor"))) %>% 
+  mutate(cell = str_remove_all(immune_cell, "tumor_|stroma_|interface_|_do_ce_k_border|_cells|plus")) %>% 
+  
+
+  ggplot(aes(x = value, y = compartment, fill = cell)) +
+  geom_density_ridges(alpha=0.2, panel_scaling = TRUE) +
+  theme_ridges()+
+  theme(#axis.title.y = element_blank(),
+        #axis.text.y = element_blank(),
+        panel.spacing = unit(0.1, "lines"),
+        # strip.text.x = element_text(size = 8),
+        legend.title = element_blank(),
+        legend.position = "bottom"
+  )+
+  scale_y_discrete(expand = c(0, 0.1))+
+  facet_wrap(~ cell, nrow = 1, scales = "free_x")
+  
+
+spatial_data %>% 
+  select(suid, ends_with("_do_ce_k_border"),
+         -c(contains("tim3"), contains("pd1"), contains("minus"))) %>% 
+  pivot_longer(cols = -c(suid), 
+               names_to = "immune_cell") %>% 
+  mutate(compartment = str_match(immune_cell, "(tumor|stroma|interface)_*")[,2],
+         compartment = factor(compartment, levels = c("interface", "stroma", "tumor"))) %>% 
+  mutate(cell = str_remove_all(immune_cell, "tumor_|stroma_|interface_|_do_ce_k_border|_cells|plus")) %>% 
+  ggplot(aes(x = value, y = compartment, fill = cell)) +
+  geom_density_ridges(alpha=0.2, panel_scaling = TRUE) +
+  theme_ridges()+
+  theme(#axis.title.y = element_blank(),
+        #axis.text.y = element_blank(),
+        panel.spacing = unit(0.1, "lines"),
+        # strip.text.x = element_text(size = 8),
+        legend.title = element_blank(),
+        legend.position = "bottom"
+  )+
+  scale_x_continuous(limits = c(-0.00001,3e7), 
+                     labels = function(x) format(x, scientific = TRUE))+
+  scale_y_discrete(expand = c(0, 0.1))+
+  facet_wrap(~ cell, nrow = 1)
+```
+
+## B. HR
+Increased immune cell clustering is associated with better survival when using 1-SD normalization. 
+```{r}
+tbl_uvregression(
+  spatial_data %>% select(int_to_event_mos, vital_status_fin, 
+                          contains("tumor") & contains("do_ce_k_border_sdhr"), 
+                          contains("stroma") & contains("do_ce_k_border_sdhr"),
+                          "interface_cd3plus_do_ce_k_border_sdhr", "interface_cd3plus_cd8plus_do_ce_k_border_sdhr"),
+  method = coxph,
+  y = Surv(time = int_to_event_mos, event = vital_status_fin),
+  exponentiate = TRUE#,
+  # include = c("tumor_cd3plus_do_ce_k_border_sdhr", "tumor_cd3plus_cd8plus_do_ce_k_border_sdhr", 
+  #             "stroma_cd3plus_do_ce_k_border_sdhr", "stroma_cd3plus_cd8plus_do_ce_k_border_sdhr", 
+  #             "interface_cd3plus_do_ce_k_border_sdhr", "interface_cd3plus_cd8plus_do_ce_k_border_sdhr"
+  # )
+  ) %>%
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**UVA**")
+```
+
+# IV. Interaction between Immune abundance and clustering
+## A. Distributions - create Dispersed and Clustered categories
+
+Use the abundance categories definitions:
+
+`cd3 high/low` = cut-off for tumor_percent_cd3_cells > 2   
+`cd3+ cd8+ high/low` = cut-off for tumor_percent_cd3plus_cd8plus_cells > 1   
+`Stroma cd3 high/low` = cut-off for stroma_percent_cd3_cells > 2   
+`Stroma cd3+ cd8+ high/low` = cut-off for stroma_percent_cd3plus_cd8plus_cells > 1   
+`Interface cd3 high/low` = cut-off for interface_percent_cd3plus_cells > 2   
+`Interface cd3+ cd8+ high/low` = cut-off for interface_percent_cd3plus_cd8plus_cells > 1   
+
+```{r}
+spatial_data1 <- spatial_data %>% 
+  # Tumor
+  mutate(tumor_cd3_cluster_cat = case_when(
+    tumor_percent_cd3_cells == 0                               ~ "No cell",
+    tumor_cd3plus_do_ce_k_border < 
+      median(tumor_cd3plus_do_ce_k_border, na.rm = TRUE)       ~ "Dispersed",
+    tumor_cd3plus_do_ce_k_border >= 
+      median(tumor_cd3plus_do_ce_k_border, na.rm = TRUE)       ~ "Clustered",
+  )) %>% 
+  mutate(tumor_cd3_abundance_cluster_cat = case_when(
+    tumor_cd3_cluster_cat == "No cell"                         ~ "No cell",
+    tumor_cd3_high_low == "Low (<=2%)" & 
+      tumor_cd3_cluster_cat == "Dispersed"                     ~ "Low Dispersed cells",
+    tumor_cd3_high_low == "Low (<=2%)" & 
+      tumor_cd3_cluster_cat == "Clustered"                     ~ "Low Clustered cells",
+    tumor_cd3_high_low == "High (>2%)" & 
+      tumor_cd3_cluster_cat == "Dispersed"                     ~ "High Dispersed cells",
+    tumor_cd3_high_low == "High (>2%)" & 
+      tumor_cd3_cluster_cat == "Clustered"                     ~ "High Clustered cells"
+  )) %>% 
+  mutate(tumor_cd3cd8_cluster_cat = case_when(
+    tumor_percent_cd3plus_cd8plus_cells == 0                           ~ "No cell",
+    tumor_cd3plus_cd8plus_do_ce_k_border < 
+      median(tumor_cd3plus_cd8plus_do_ce_k_border, na.rm = TRUE)       ~ "Dispersed",
+    tumor_cd3plus_cd8plus_do_ce_k_border >= 
+      median(tumor_cd3plus_cd8plus_do_ce_k_border, na.rm = TRUE)       ~ "Clustered",
+  )) %>% 
+  mutate(tumor_cd3cd8_abundance_cluster_cat = case_when(
+    tumor_cd3cd8_cluster_cat == "No cell"                         ~ "No cell",
+    tumor_cd3_cd8_high_low == "Low (<=1%)" & 
+      tumor_cd3cd8_cluster_cat == "Dispersed"                     ~ "Low Dispersed cells",
+    tumor_cd3_cd8_high_low == "Low (<=1%)" & 
+      tumor_cd3cd8_cluster_cat == "Clustered"                     ~ "Low Clustered cells",
+    tumor_cd3_cd8_high_low == "High (>1%)" & 
+      tumor_cd3cd8_cluster_cat == "Dispersed"                     ~ "High Dispersed cells",
+    tumor_cd3_cd8_high_low == "High (>1%)" & 
+      tumor_cd3cd8_cluster_cat == "Clustered"                     ~ "High Clustered cells"
+  )) %>% 
+  # Stroma
+  mutate(stroma_cd3_cluster_cat = case_when(
+    stroma_percent_cd3_cells == 0                               ~ "No cell",
+    stroma_cd3plus_do_ce_k_border < 
+      median(stroma_cd3plus_do_ce_k_border, na.rm = TRUE)       ~ "Dispersed",
+    stroma_cd3plus_do_ce_k_border >= 
+      median(stroma_cd3plus_do_ce_k_border, na.rm = TRUE)       ~ "Clustered",
+  )) %>% 
+  mutate(stroma_cd3_abundance_cluster_cat = case_when(
+    stroma_cd3_cluster_cat == "No cell"                         ~ "No cell",
+    stroma_cd3_high_low == "Low (<=2%)" & 
+      stroma_cd3_cluster_cat == "Dispersed"                     ~ "Low Dispersed cells",
+    stroma_cd3_high_low == "Low (<=2%)" & 
+      stroma_cd3_cluster_cat == "Clustered"                     ~ "Low Clustered cells",
+    stroma_cd3_high_low == "High (>2%)" & 
+      stroma_cd3_cluster_cat == "Dispersed"                     ~ "High Dispersed cells",
+    stroma_cd3_high_low == "High (>2%)" & 
+      stroma_cd3_cluster_cat == "Clustered"                     ~ "High Clustered cells"
+  )) %>% 
+  mutate(stroma_cd3cd8_cluster_cat = case_when(
+    stroma_percent_cd3plus_cd8plus_cells == 0                           ~ "No cell",
+    stroma_cd3plus_cd8plus_do_ce_k_border < 
+      median(stroma_cd3plus_cd8plus_do_ce_k_border, na.rm = TRUE)       ~ "Dispersed",
+    stroma_cd3plus_cd8plus_do_ce_k_border >= 
+      median(stroma_cd3plus_cd8plus_do_ce_k_border, na.rm = TRUE)       ~ "Clustered",
+  )) %>% 
+  mutate(stroma_cd3cd8_abundance_cluster_cat = case_when(
+    stroma_cd3cd8_cluster_cat == "No cell"                         ~ "No cell",
+    stroma_cd3_cd8_high_low == "Low (<=1%)" & 
+      stroma_cd3cd8_cluster_cat == "Dispersed"                     ~ "Low Dispersed cells",
+    stroma_cd3_cd8_high_low == "Low (<=1%)" & 
+      stroma_cd3cd8_cluster_cat == "Clustered"                     ~ "Low Clustered cells",
+    stroma_cd3_cd8_high_low == "High (>1%)" & 
+      stroma_cd3cd8_cluster_cat == "Dispersed"                     ~ "High Dispersed cells",
+    stroma_cd3_cd8_high_low == "High (>1%)" & 
+      stroma_cd3cd8_cluster_cat == "Clustered"                     ~ "High Clustered cells"
+  )) %>% 
+  # Interface
+  mutate(interface_cd3_cluster_cat = case_when(
+    interface_percent_cd3plus_cells == 0                               ~ "No cell",
+    interface_cd3plus_do_ce_k_border < 
+      median(interface_cd3plus_do_ce_k_border, na.rm = TRUE)       ~ "Dispersed",
+    interface_cd3plus_do_ce_k_border >= 
+      median(interface_cd3plus_do_ce_k_border, na.rm = TRUE)       ~ "Clustered",
+  )) %>% 
+  mutate(interface_cd3_abundance_cluster_cat = case_when(
+    interface_cd3_cluster_cat == "No cell"                         ~ "No cell",
+    interface_cd3_high_low == "Low (<=2%)" & 
+      interface_cd3_cluster_cat == "Dispersed"                     ~ "Low Dispersed cells",
+    interface_cd3_high_low == "Low (<=2%)" & 
+      interface_cd3_cluster_cat == "Clustered"                     ~ "Low Clustered cells",
+    interface_cd3_high_low == "High (>2%)" & 
+      interface_cd3_cluster_cat == "Dispersed"                     ~ "High Dispersed cells",
+    interface_cd3_high_low == "High (>2%)" & 
+      interface_cd3_cluster_cat == "Clustered"                     ~ "High Clustered cells"
+  )) %>% 
+  mutate(interface_cd3cd8_cluster_cat = case_when(
+    interface_percent_cd3plus_cd8plus_cells == 0                           ~ "No cell",
+    interface_cd3plus_cd8plus_do_ce_k_border < 
+      median(interface_cd3plus_cd8plus_do_ce_k_border, na.rm = TRUE)       ~ "Dispersed",
+    interface_cd3plus_cd8plus_do_ce_k_border >= 
+      median(interface_cd3plus_cd8plus_do_ce_k_border, na.rm = TRUE)       ~ "Clustered",
+  )) %>% 
+  mutate(interface_cd3cd8_abundance_cluster_cat = case_when(
+    interface_cd3cd8_cluster_cat == "No cell"                         ~ "No cell",
+    interface_cd3_cd8_high_low == "Low (<=1%)" & 
+      interface_cd3cd8_cluster_cat == "Dispersed"                     ~ "Low Dispersed cells",
+    interface_cd3_cd8_high_low == "Low (<=1%)" & 
+      interface_cd3cd8_cluster_cat == "Clustered"                     ~ "Low Clustered cells",
+    interface_cd3_cd8_high_low == "High (>1%)" & 
+      interface_cd3cd8_cluster_cat == "Dispersed"                     ~ "High Dispersed cells",
+    interface_cd3_cd8_high_low == "High (>1%)" & 
+      interface_cd3cd8_cluster_cat == "Clustered"                     ~ "High Clustered cells"
+  )) %>% 
+  mutate(across(c(ends_with("_cluster_cat"), -ends_with("_abundance_cluster_cat")), 
+                ~ factor(., levels = 
+                           c("Clustered", "Dispersed", "No cell")))) %>% 
+  mutate(across(c(ends_with("_abundance_cluster_cat")), 
+                ~ factor(., levels = 
+                           c("Low Clustered cells", "Low Dispersed cells", 
+                             "High Dispersed cells", "High Clustered cells", "No cell")))) %>% 
+  mutate(clustering_cd3_tumor_stroma = case_when(
+    tumor_cd3_cluster_cat == "Dispersed" |
+      stroma_cd3_cluster_cat == "Dispersed"        ~ "Both dispersed",
+    tumor_cd3_cluster_cat == "Clustered" |
+      stroma_cd3_cluster_cat == "Clustered"        ~ "Both clustered",
+    
+    tumor_cd3_cluster_cat == "Dispersed" |
+      stroma_cd3_cluster_cat == "Clustered"        ~ "Cluster stroma/dispersed tumore",
+    tumor_cd3_cluster_cat == "Clustered" |
+      stroma_cd3_cluster_cat == "Dispersed"        ~ "Cluster tumor/dispersed stroma"
+  )) %>% 
+  mutate(across(c(ends_with("do_ce_k_border_sdhr")), ~ case_when(
+    ntile(., 5) == 1 ~ "1",
+    ntile(., 5) == 2 ~ "2",
+    ntile(., 5) == 3 ~ "3",
+    ntile(., 5) == 4 ~ "4",
+    ntile(., 5) == 5 ~ "High clustered"),
+    .names = "{.col}_5cat"))
+
+
+
+spatial_data1 %>% 
+  select(ends_with("cluster_cat"), #ends_with("_5cat"), 
+         clustering_cd3_tumor_stroma
+         ) %>% 
+  tbl_summary() %>%
+  bold_labels() 
+```
+
+## B. HR
+When using categorical variables :
+
+- Increased immune cell clustering is associated with better survival or Dispersed cells is associated with worst survival. 
+- High abundance / high cluster is associated with better survival
+```{r}
+tbl_uvregression(
+  spatial_data1 %>% select(int_to_event_mos, vital_status_fin,
+                           ends_with("cluster_cat")),
+  method = coxph,
+  y = Surv(time = int_to_event_mos, event = vital_status_fin),
+  exponentiate = TRUE#,
+  # include = c("tumor_cd3_cluster_cat",
+  #             "tumor_cd3_abundance_cluster_cat",
+  #             "stroma_cd3_cluster_cat",
+  #             "stroma_cd3_abundance_cluster_cat",
+  #             # "interface_cd3_cluster_cat",
+  #             # "interface_cd3_abundance_cluster_cat",
+  #             "clustering_cd3_tumor_stroma",
+  #             # "tumor_cd3plus_do_ce_k_border_sdhr_5cat",
+  #             # "tumor_cd3plus_cd8plus_do_ce_k_border_sdhr_5cat",
+  #             # "tumor_cd3plus_cd8minus_do_ce_k_border_sdhr_5cat",
+  #             # "stroma_cd3plus_do_ce_k_border_sdhr_5cat",
+  #             # "stroma_cd3plus_cd8plus_do_ce_k_border_sdhr_5cat",
+  #             # "stroma_cd3plus_cd8minus_do_ce_k_border_sdhr_5cat"
+  # )
+  ) %>%
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**UVA**")
+```
+
+
+
+
+
+# WTS eligible???
+```{r}
+wts_eligible <- spatial_data %>% 
+  filter(tumorkernel_tumorhalo_cells >= 500 & stromakernel_stromahalo_cells >= 500)
+```
+
+
+# V. Logit approach
+
+logit_prop (T cell % in Tumor – logit transformed)
+logit_stroma_prop (T cell % in stroma – logit transformed)
+cd8p_cd8n_logratio (Tumor CD8+/CD8- ratio – log transformed) 
+cd8p_cd8n_stroma_logratio (Stroma CD8+/CD8- ratio – log transformed)
+
+```{r Brett logit transf}
+eps <- 1e-7
+spatial_log_data <- spatial_data1 %>% 
+  mutate(
+  #        cyto_stroma_z = scale(stroma_cyto_tcell, center = TRUE, scale = TRUE),
+  #        cyto_tumor_z =  scale(tumor_cyto_tcell, center = TRUE, scale = TRUE),
+  #        cyto_interface_z =  scale(interface_cyto_tcell, center = TRUE, scale = TRUE),
+  #        stroma_z = scale(stroma_tcell, center = TRUE, scale = TRUE),
+  #        tumor_z =  scale(tumor_tcell, center = TRUE, scale = TRUE),
+  #        interface_z =  scale(interface_tcell, center = TRUE, scale = TRUE),
+  #        stroma_ex_z = scale(stroma_percent_cd3plus_tim3plus_cells, center = TRUE, scale = TRUE),
+  #        tumor_ex_z =  scale(tumor_percent_cd3plus_tim3plus_cells, center = TRUE, scale = TRUE),
+  #        interface_ex_z =  scale(interface_percent_cd3plus_tim3plus_cells, center = TRUE, scale = TRUE),
+  #        stroma_cytoex_z = scale(stroma_percent_cd3plus_cd8plus_tim3plus_cells, center = TRUE, scale = TRUE),
+  #        tumor_cytoex_z =  scale(tumor_percent_cd3plus_cd8plus_tim3plus_cells, center = TRUE, scale = TRUE),
+  #        interface_cytoex_z =  scale(interface_percent_cd3plus_cd8plus_tim3plus_cells, center = TRUE, scale = TRUE)) %>%
+  # #same for CD8- subtype for models with CD8- and CD8+ both included - sensitivity analyses
+  # mutate(nocyto_tumor_z = scale(tumor_percent_cd3plus_cd8minus_cells, center=TRUE, scale=TRUE ),
+  #        tumor_nocytoex_z = scale(tumor_percent_cd3plus_cd8minus_tim3plus_cells, center=TRUE, scale=TRUE)) %>%
+  # mutate(nocyto_stroma_z = scale(stroma_percent_cd3plus_cd8minus_cells, center=TRUE, scale=TRUE ),
+  #        stroma_nocytoex_z = scale(stroma_percent_cd3plus_cd8minus_tim3plus_cells, center=TRUE, scale=TRUE)) %>%
+  # mutate(tumor_noncyto_tcell_timexhausted = (  ifelse(tumor_cd3plus_cd8minus_cells != 0,
+  #                                                     (tumor_cd3plus_cd8minus_tim3plus_cells  / 
+  #                                                        tumor_cd3plus_cd8minus_cells)*100, 0) )) %>%
+  # mutate(stroma_noncyto_tcell_timexhausted = (  ifelse(stroma_cd3plus_cd8minus_cells != 0,
+  #                                                      (stroma_cd3plus_cd8minus_tim3plus_cells  / 
+  #                                                         stroma_cd3plus_cd8minus_cells)*100, 0) )) %>%
+  # mutate(interface_noncyto_tcell_timexhausted = (  ifelse(interface_cd3plus_cd8minus_cells != 0,
+  #                                                         (interface_cd3plus_cd8minus_tim3plus_cells  / 
+  #                                                            interface_cd3plus_cd8minus_cells)*100, 0) )
+  ) %>%
+  # scale
+  mutate(tumor_cd3plus_do_ce_k_border_scale = scales::rescale(tumor_cd3plus_do_ce_k_border, to=c(0,1)),
+         stroma_cd3plus_do_ce_k_border_scale = scales::rescale(stroma_cd3plus_do_ce_k_border, to=c(0,1)),
+         tumor_cd3plus_cd8plus_do_ce_k_border_scale = scales::rescale(tumor_cd3plus_cd8plus_do_ce_k_border, to=c(0,1)),
+         stroma_cd3plus_cd8plus_do_ce_k_border_scale = scales::rescale(stroma_cd3plus_cd8plus_do_ce_k_border, to=c(0,1))) %>% 
+  ## RATIOS
+  mutate(
+         # cd3p_cd3n_ratio = (tumor_cd3_cells + eps) / ((tumor_total_cells - tumor_cd3_cells) + eps),
+         # cd3p_cd3n_logratio = log(cd3p_cd3n_ratio),
+         # cd3p_cd3n_stroma_ratio = (stroma_cd3_cells + eps) / ((stroma_total_cells - stroma_cd3_cells) + eps),
+         # cd3p_cd3n_stroma_logratio = log(cd3p_cd3n_stroma_ratio),
+         # cd3p_cd3n_interface_ratio = (interface_cd3plus_cells + eps) / ((interface_total_cells - interface_cd3plus_cells) + eps),
+         # cd3p_cd3n_interface_logratio = log(cd3p_cd3n_interface_ratio),
+         cd8p_cd8n_ratio = (tumor_cd3plus_cd8plus_cells + eps) / (tumor_cd3plus_cd8minus_cells + eps),
+         cd8p_cd8n_logratio = log(cd8p_cd8n_ratio),
+         cd8p_cd8n_stroma_ratio = (stroma_cd3plus_cd8plus_cells + eps) / (stroma_cd3plus_cd8minus_cells + eps),
+         cd8p_cd8n_stroma_logratio = log(cd8p_cd8n_stroma_ratio),
+         #    cd8p_cd8n_interface_ratio = (interface_cd3plus_cd8plus_cells + eps) / (interface_cd3plus_cd8minus_cells + eps),
+         #    cd8p_cd8n_interface_logratio = log(cd8p_cd8n_interface_ratio),
+         logit_prop = qlogis(pmin(pmax(tumor_percent_cd3_cells/100, eps), 1-eps)),
+         logit_stroma_prop = qlogis(pmin(pmax(stroma_percent_cd3_cells/100, eps), 1-eps)),
+         #    logit_interface_prop = qlogis(pmin(pmax(interface_percent_cd3plus_cells/100, eps), 1-eps)),
+         logit_cytoprop = qlogis(pmin(pmax(tumor_percent_cd3plus_cd8plus_cells/100, eps), 1-eps)),
+         logit_stroma_cytoprop = qlogis(pmin(pmax(stroma_percent_cd3plus_cd8plus_cells/100, eps), 1-eps)),
+         #    logit_interface_cytoprop = qlogis(pmin(pmax(interface_percent_cd3plus_cd8plus_cells/100, eps), 1-eps)),
+         #    logit_cytoprop_relative = qlogis(pmin(pmax(tumor_cyto_tcell_relative/100, eps), 1-eps)),
+         #    logit_stroma_cytoprop_relative = qlogis(pmin(pmax(stroma_cyto_tcell_relative/100, eps), 1-eps)),
+         #    logit_interface_cytoprop_relative = qlogis(pmin(pmax(interface_cyto_tcell_relative/100, eps), 1-eps)),
+         #    tumor_cd3plus_tim3minus_cells = tumor_cd3_cells -  tumor_cd3plus_tim3plus_cells,
+         #    stroma_cd3plus_tim3minus_cells = stroma_cd3_cells -  stroma_cd3plus_tim3plus_cells,
+         #    interface_cd3plus_tim3minus_cells = interface_cd3plus_cells -  interface_cd3plus_tim3plus_cells,
+         #    timp_timn_ratio =  (tumor_cd3plus_tim3plus_cells + eps) / (tumor_cd3plus_tim3minus_cells + eps),
+         #    timp_timn_logratio = log(timp_timn_ratio),
+         #    timp_timn_stroma_ratio =  (stroma_cd3plus_tim3plus_cells + eps) / (stroma_cd3plus_tim3minus_cells + eps),
+         #    timp_timn_stroma_logratio = log(timp_timn_stroma_ratio),
+         #    timp_timn_interface_ratio =  (interface_cd3plus_tim3plus_cells + eps) / (interface_cd3plus_tim3minus_cells + eps),
+         #    timp_timn_interface_logratio = log(timp_timn_interface_ratio),
+         #    logit_exhprop = qlogis(pmin(pmax(tumor_tcell_timexhausted/100, eps), 1-eps)),
+         #    logit_stroma_exhprop = qlogis(pmin(pmax(stroma_tcell_timexhausted/100, eps), 1-eps)),
+         #    logit_interface_exhprop = qlogis(pmin(pmax(interface_tcell_timexhausted/100, eps), 1-eps)),
+         #    logit_exh2prop = qlogis(pmin(pmax(tumor_tcell_bothexhausted/100, eps), 1-eps)),
+         #    logit_stroma_exh2prop = qlogis(pmin(pmax(stroma_tcell_bothexhausted/100, eps), 1-eps)),
+         #    logit_interface_exh2prop = qlogis(pmin(pmax(interface_tcell_bothexhausted/100, eps), 1-eps)),
+         #   logit_exh2prop_total = qlogis(pmin(pmax(tumor_percent_cd3plus_pd1plus_tim3plus_cells /100, eps), 1-eps)),
+         #    logit_stroma_exh2prop_total = qlogis(pmin(pmax(stroma_percent_cd3plus_pd1plus_tim3plus_cells/100, eps), 1-eps)),
+         #    logit_interface_exh2prop_total = qlogis(pmin(pmax(interface_percent_cd3plus_tim3plus_cells/100, eps), 1-eps)),
+         # logit_exh2cytoprop_total = qlogis(pmin(pmax(tumor_percent_cd3plus_cd8plus_pd1plus_tim3plus_cells /100, eps), 1-eps)),
+         #    logit_stroma_exh2cytoprop_total = qlogis(pmin(pmax(stroma_percent_cd3plus_cd8plus_pd1plus_tim3plus_cells/100, eps), 1-eps)),
+         #    logit_interface_exh2cytoprop_total = qlogis(pmin(pmax(interface_percent_cd3plus_cd8plus_pd1plus_tim3plus_cells/100, eps), 1-eps)),
+         # logit_exh2prop_relative = qlogis(pmin(pmax(tumor_pd1_relative/100, eps), 1-eps)),
+         #    logit_stroma_exh2prop_relative = qlogis(pmin(pmax(stroma_pd1_relative/100, eps), 1-eps)),
+         #    logit_interface_exh2prop_relative = qlogis(pmin(pmax(interface_pd1_relative/100, eps), 1-eps)),
+         #   logit_exh2cytoprop_relative = qlogis(pmin(pmax(tumor_pd1_cyto_relative/100, eps), 1-eps)),
+         #    logit_stroma_exh2cytoprop_relative = qlogis(pmin(pmax(stroma_pd1_cyto_relative/100, eps), 1-eps)),
+         #    logit_interface_exh2cytoprop_relative = qlogis(pmin(pmax(interface_pd1_cyto_relative/100, eps), 1-eps)),
+         #    tumor_cd3plus_cd8plus_tim3minus_cells = tumor_cd3plus_cd8plus_cells - tumor_cd3plus_cd8plus_tim3plus_cells,
+         #    stroma_cd3plus_cd8plus_tim3minus_cells = stroma_cd3plus_cd8plus_cells - stroma_cd3plus_cd8plus_tim3plus_cells,
+         #    interface_cd3plus_cd8plus_tim3minus_cells = interface_cd3plus_cd8plus_cells - interface_cd3plus_cd8plus_tim3plus_cells,
+         #    timp_timn_cd8_ratio = (tumor_cd3plus_cd8plus_tim3plus_cells + eps) / (tumor_cd3plus_cd8plus_tim3minus_cells + eps),
+         #    timp_timn_cd8_logratio = log(timp_timn_cd8_ratio),
+         #    timp_timn_cd8_stroma_ratio = (stroma_cd3plus_cd8plus_tim3plus_cells + eps) / (stroma_cd3plus_cd8plus_tim3minus_cells + eps),
+         #    timp_timn_cd8_stroma_logratio = log(timp_timn_cd8_stroma_ratio),
+         #    timp_timn_cd8_interface_ratio = (interface_cd3plus_cd8plus_tim3plus_cells + eps) / (interface_cd3plus_cd8plus_tim3minus_cells + eps),
+         #    timp_timn_cd8_interface_logratio = log(timp_timn_cd8_interface_ratio),
+         # logit_exhprop_total = qlogis(pmin(pmax(tumor_percent_cd3plus_tim3plus_cells/100, eps), 1-eps)),
+         #    logit_stroma_exhprop_total = qlogis(pmin(pmax(stroma_percent_cd3plus_tim3plus_cells/100, eps), 1-eps)),
+         #    logit_interface_exhprop_total = qlogis(pmin(pmax(interface_percent_cd3plus_tim3plus_cells/100, eps), 1-eps)),
+         #   logit_exhcytoprop_total = qlogis(pmin(pmax(tumor_percent_cd3plus_cd8plus_tim3plus_cells/100, eps), 1-eps)),
+         #    logit_stroma_exhcytoprop_total = qlogis(pmin(pmax(stroma_percent_cd3plus_cd8plus_tim3plus_cells/100, eps), 1-eps)),
+         #    logit_interface_exhcytoprop_total = qlogis(pmin(pmax(interface_percent_cd3plus_cd8plus_tim3plus_cells/100, eps), 1-eps)),
+         #    logit_exhcytoprop = qlogis(pmin(pmax(tumor_cyto_tcell_timexhausted/100, eps), 1-eps)),
+         #    logit_stroma_exhcytoprop = qlogis(pmin(pmax(stroma_cyto_tcell_timexhausted/100, eps), 1-eps)),
+         #    logit_interface_exhcytoprop = qlogis(pmin(pmax(interface_cyto_tcell_timexhausted/100, eps), 1-eps)),
+         #    logit_exh2cytoprop = qlogis(pmin(pmax(tumor_cyto_tcell_bothexhausted/100, eps), 1-eps)),
+         #    logit_stroma_exh2cytoprop = qlogis(pmin(pmax(stroma_cyto_tcell_bothexhausted/100, eps), 1-eps)),
+         #    logit_interface_exh2cytoprop = qlogis(pmin(pmax(interface_cyto_tcell_bothexhausted/100, eps), 1-eps)),
+         #    logit_exhnocytoprop = qlogis(pmin(pmax(tumor_noncyto_tcell_timexhausted/100, eps), 1-eps)),
+         #    logit_stroma_exhnocytoprop = qlogis(pmin(pmax(stroma_noncyto_tcell_timexhausted/100, eps), 1-eps)),
+         #    logit_interface_exhnocytoprop = qlogis(pmin(pmax(interface_noncyto_tcell_timexhausted/100, eps), 1-eps)) 
+         
+         
+         logit_cd3tumor_ripley = qlogis(pmin(pmax(tumor_cd3plus_do_ce_k_border_scale, eps), 1-eps)),
+         logit_cd3stroma_ripley = qlogis(pmin(pmax(stroma_cd3plus_do_ce_k_border_scale, eps), 1-eps)),
+         logit_cd8tumor_ripley = qlogis(pmin(pmax(tumor_cd3plus_cd8plus_do_ce_k_border_scale, eps), 1-eps)),
+         logit_cd8stroma_ripley = qlogis(pmin(pmax(stroma_cd3plus_cd8plus_do_ce_k_border_scale, eps), 1-eps))
+  ) %>%
+  #Paired Differences
+  # mutate(cd3_total_diff = logit_prop - logit_stroma_prop,
+                     # cd8_total_diff = logit_cytoprop - logit_stroma_cytoprop,
+                     # cd8_ratio_diff = cd8p_cd8n_logratio - cd8p_cd8n_stroma_logratio,
+                     # exh_total_diff = logit_exhprop_total - logit_stroma_exhprop_total,
+                     # exhcd8_total_diff = logit_exhcytoprop_total - logit_stroma_exhcytoprop_total,
+                     # exh_ratio_diff = timp_timn_logratio - timp_timn_stroma_logratio, 
+                     # exhcd8_ratio_diff = timp_timn_cd8_logratio - timp_timn_cd8_stroma_logratio,
+                     # exh2_total_diff = logit_exh2prop_total - logit_stroma_exh2prop_total,
+                     # exh2cd8_total_diff = logit_exh2cytoprop_total - logit_stroma_exh2cytoprop_total,
+                     # exh2_ratio_diff = logit_exh2prop - logit_stroma_exh2prop,
+                     # exh2cd8_ratio_diff = logit_exh2cytoprop - logit_stroma_exh2cytoprop) %>%
+  # set_variable_labels(cd3_total_diff = "CD3+ Difference (T-S)",
+  #                    cd8_total_diff = "CD8+ Difference (T-S)",
+  #                    cd8_ratio_diff = "CD8 Ratio Difference (T-S)",
+  #                    exh_total_diff = "TIM3+ Difference (T-S)",
+  #                    exhcd8_total_diff = "TIM3+CD8+ Difference (T-S)",
+  #                    exh_ratio_diff =  "TIM3 Ratio Difference (T-S)", 
+  #                    exhcd8_ratio_diff = "TIM3 CD8 Ratio Difference (T-S)",
+  #                    exh2_total_diff = "TIM3+PD1+ Difference (T-S)",
+  #                    exh2cd8_total_diff = "TIM3+PD1+CD8+ Difference (T-S)",
+  #                    exh2_ratio_diff = "TIM3+PD1 Ratio Difference (T-S)",
+  #                    exh2cd8_ratio_diff = "TIM3+PD1 CD8 Ratio Difference (T-S)") %>%
+  
+  set_variable_labels(
+                      # tumor_tcell="Tumor T cell",
+                      # tumor_cyto_tcell="Tumor Cytotoxic T cell",
+                      # tumor_cd8minus_tcell="Tumor CD8- T cell",
+                      # tumor_bcell = "Tumor B cell",
+                      # tumor_cyto_tcell_relative= "Tumor Cytotoxic T cell (% of T cells)",
+                      # tumor_cd8minus_tcell_relative= "Tumor CD8- T cell (% of T cells)",
+                      # tcell_exh2_grp = "Tumor TIM3+PD1+ Abundance",
+                      # tcell_exh2_stroma_grp = "Stroma TIM3+PD1+ Abundance",
+                      # tcell_exh2_interface_grp = "Interface TIM3+PD1+ Abundance",
+                      # tcell_cyto_exh2_grp = "Tumor Cyto TIM3+PD1+ Abundance",
+                      # tcell_cyto_exh2_stroma_grp = "Stroma Cyto TIM3+PD1+ Abundance",
+                      # tcell_cyto_exh2_interface_grp = "Interface Cyto TIM3+PD1+ Abundance",
+                      # 
+                      # stroma_tcell="Stroma T cell",
+                      # stroma_cyto_tcell="Stroma Cytotoxic T cell",
+                      # stroma_cd8minus_tcell="Stroma CD8- T cell",
+                      # stroma_bcell = "Stroma B cell",
+                      # stroma_cyto_tcell_relative= "Stroma Cytotoxic T cell (% of T cells)",
+                      # stroma_cd8minus_tcell_relative= "Stroma CD8- T cell (% of T cells)",
+                      # cd3p_cd3n_logratio = "Tumor CD3+/CD3- Ratio (Log)",
+                      # cd3p_cd3n_stroma_logratio = "Stroma CD3+/CD3- Ratio (Log)",
+                      # cd3p_cd3n_interface_logratio = "Interface CD3+/CD3- Ratio (Log)",
+                      cd8p_cd8n_logratio = "Tumor CD8+/CD8- Ratio (Log)",
+                      cd8p_cd8n_stroma_logratio = "Stroma CD8+/CD8- Ratio (Log)",
+                      # cd8p_cd8n_interface_logratio = "Interface CD8+/CD8- Ratio (Log)",
+                      # timp_timn_logratio = "Tumor TIM+/TIM- Ratio (Log)",
+                      # timp_timn_stroma_logratio = "Stroma TIM+/TIM- Ratio (Log)",
+                      # timp_timn_interface_logratio = "Interface TIM+/TIM- Ratio (Log)",
+                      # timp_timn_cd8_logratio = "Tumor TIM+/TIM- CD8+ Ratio (Log)",
+                      # timp_timn_cd8_stroma_logratio = "Stroma TIM+/TIM- CD8+ Ratio (Log)",
+                      # timp_timn_cd8_interface_logratio = "Interface TIM+/TIM- CD8+ Ratio (Log)",
+                      
+                      logit_prop = "Tumor T cell proportion (Logit)",
+                      logit_stroma_prop = "Stroma T cell proportion (Logit)",
+                      #  logit_interface_prop = "Interface T cell proportion (Logit)",
+                      logit_cytoprop = "Tumor CD8+ T cell proportion (Logit)",
+                      #  logit_exhprop = "Tumor Exhausted T cell proportion (Logit)",
+                      #  logit_exhcytoprop = "Tumor Exhausted CD8+ T cell proportion (Logit)",
+                      #  logit_exhnocytoprop = "Tumor Exhausted CD8- T cell proportion (Logit)",
+                      logit_stroma_cytoprop = "Stroma CD8+ T cell proportion (Logit)",
+                      #  logit_stroma_exhprop ="Stroma Exhausted T cell proportion (Logit)",
+                      #  logit_stroma_exhcytoprop = "Stroma Exhausted CD8+ T cell proportion (Logit)",
+                      #  logit_stroma_exhnocytoprop = "Stroma Exhausted CD8- T cell proportion (Logit)",
+                      #  logit_interface_cytoprop = "Interface CD8+ T cell proportion (Logit)",
+                      #  logit_interface_exhprop ="Interface Exhausted T cell proportion (Logit)",
+                      #  logit_interface_exhcytoprop = "Interface Exhausted CD8+ T cell proportion (Logit)",
+                      #  logit_interface_exhnocytoprop = "Interface Exhausted CD8- T cell proportion (Logit)",
+                      #  
+                      #  logit_exh2prop = "Tumor PD1 Exhausted T cell proportion (Logit)",
+                      #  logit_exh2cytoprop = "Tumor PD1 Exhausted CD8+ T cell proportion (Logit)",
+                      #  logit_stroma_exh2prop ="Stroma PD1 Exhausted T cell proportion (Logit)",
+                      #  logit_stroma_exh2cytoprop = "Stroma PD1 Exhausted CD8+ T cell proportion (Logit)",
+                      #  logit_interface_exh2prop ="Interface PD1 Exhausted T cell proportion (Logit)",
+                      #  logit_interface_exh2cytoprop = "Interface PD1 Exhausted CD8+ T cell proportion (Logit)",
+                      #  
+                      #  tumor_z="Tumor T cell abundance (1 SD)",
+                      #  stroma_z ="Stroma T cell abundance (1 SD)",
+                      #  interface_z ="Interface T cell abundance (1 SD)",
+                      #  cyto_tumor_z="Tumor CD8+ abundance (1 SD)",
+                      #  cyto_stroma_z ="Stroma CD8+ abundance (1 SD)",
+                      #  cyto_interface_z ="Interface CD8+ abundance (1 SD)",
+                      #  nocyto_tumor_z="Tumor CD8- abundance (1 SD)",
+                      #  nocyto_stroma_z ="Stroma CD8- abundance (1 SD)",
+                      #  tumor_noncyto_tcell_timexhausted= "Tumor CD8- Exhausted Proportion",
+                      #  stroma_noncyto_tcell_timexhausted = "Stroma CD8- Exhausted Proportion",
+                      #  interface_noncyto_tcell_timexhausted = "Interface CD8- Exhausted Proportion",
+                      #  
+                      #  interface_tcell="Interface T cell",
+                      #  interface_cyto_tcell="Interface Cytotoxic T cell",
+                      #  interface_bcell = "Interface B cell",
+                      #  interface_cyto_tcell_relative= "Interface Cytotoxic T cell (% of T cells)",
+                      # 
+                      # tumor_tcell_timexhausted= "Tumor Exhausted T cell - TIM3+",
+                      # stroma_tcell_timexhausted= "Stroma Exhausted T cell - TIM3+",
+                      # interface_tcell_timexhausted= "Interface Exhausted T cell - TIM3+",
+                      # tumor_cyto_tcell_timexhausted= "Tumor Exhausted Cyto T cell - TIM3+",
+                      # stroma_cyto_tcell_timexhausted= "Stroma Exhausted Cyto T cell - TIM3+",
+                      # interface_cyto_tcell_timexhausted= "Interface Exhausted Cyto T cell - TIM3+",
+                      # 
+                      # tumor_tcell_bothexhausted= "Tumor Terminal Exhausted T cell - PD1+TIM3+",
+                      # stroma_tcell_bothexhausted= "Stroma Terminal Exhausted T cell - PD1+TIM3+",
+                      # interface_tcell_bothexhausted= "Interface Terminal Exhausted T cell - PD1+TIM3+",
+                      # tumor_cyto_tcell_bothexhausted= "Tumor Terminal Exhausted Cyto T cell - PD1+TIM3+",
+                      # stroma_cyto_tcell_bothexhausted= "Stroma Terminal Exhausted Cyto T cell - PD1+TIM3+",
+                      # interface_cyto_tcell_bothexhausted= "Interface Terminal Exhausted Cyto T cell - PD1+TIM3+"
+  )
+```
+
+```{r Brett create exhausted}
+## Create  datasets - all histotypes and limited to HGSOC datasets 
+## Rerunning median groups so reset thresholds to the limited subjects distributions
+
+# data <- compartment %>%
+# #reset median cutoff for this dataset distribution
+#   mutate(tcell_exhausted =
+#           ifelse(tumor_tcell_timexhausted > median(tumor_tcell_timexhausted, na.rm = TRUE), "Above Median", "Below Median")) %>%
+#   mutate(tcell_exhausted_stroma = 
+#         ifelse(stroma_tcell_timexhausted > median(stroma_tcell_timexhausted, na.rm = TRUE),  "Above Median", "Below Median")) %>%
+#   mutate(tcell_exhausted_interface = 
+#         ifelse(interface_tcell_timexhausted > median(interface_tcell_timexhausted, na.rm = TRUE),  "Above Median", "Below Median")) %>%
+#   mutate(tcell_cyto_exhausted =
+#           ifelse(tumor_cyto_tcell_timexhausted > median(tumor_cyto_tcell_timexhausted, na.rm = TRUE), "Above Median", "Below Median")) %>%
+#   mutate(tcell_cyto_exhausted_stroma = 
+#         ifelse(stroma_cyto_tcell_timexhausted > median(stroma_cyto_tcell_timexhausted, na.rm = TRUE),  "Above Median", "Below Median")) %>%
+#   mutate(tcell_cyto_exhausted_interface = 
+#         ifelse(interface_cyto_tcell_timexhausted > median(interface_cyto_tcell_timexhausted, na.rm = TRUE),  "Above Median", "Below Median")) %>%
+#   
+# #exhaustion variable with low t cells by exhaustion  
+#   mutate(tcell_cat = case_when (
+#             `cd3 high/low` == "Low (<=2%)" & tcell_exhausted == "Above Median"     ~ "Low T cells-High Exhaustion",
+#              `cd3 high/low` == "Low (<=2%)" & tcell_exhausted == "Below Median"   ~ "Low T cells-Low Exhaustion",
+#             `cd3 high/low` != "Low (<=2%)" & tcell_exhausted == "Above Median"     ~ "High T cells-High Exhaustion",
+#             `cd3 high/low` != "Low (<=2%)" & tcell_exhausted == "Below Median"     ~ "High T cells-Low Exhaustion"
+#   )) %>%
+#   mutate(tcell_cat = factor(tcell_cat, levels=c("Low T cells-Low Exhaustion", "Low T cells-High Exhaustion", 
+#                                                 "High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#   mutate(tcell_cat_stroma = case_when (
+#         `Stroma cd3 high/low` == "Low (<=2%)" & tcell_exhausted_stroma == "Above Median" ~ "Low T cells-High Exhaustion",
+#         `Stroma cd3 high/low` == "Low (<=2%)" & tcell_exhausted_stroma == "Below Median" ~ "Low T cells-Low Exhaustion",
+#       `Stroma cd3 high/low` != "Low (<=2%)" & tcell_exhausted_stroma == "Above Median" ~ "High T cells-High Exhaustion",
+#       `Stroma cd3 high/low` != "Low (<=2%)" & tcell_exhausted_stroma == "Below Median" ~ "High T cells-Low Exhaustion"
+#   )) %>%
+#   mutate(tcell_cat_stroma = factor(tcell_cat_stroma, levels=c("Low T cells-Low Exhaustion", 
+#               "Low T cells-High Exhaustion","High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#   mutate(tcell_cat_interface = case_when (
+#       interface_percent <1 ~ "No interface",
+#       `Interface cd3 high/low` == "Low (<=2%)" & tcell_exhausted_interface == "Above Median" ~ "Low T cells-High Exhaustion",
+#       `Interface cd3 high/low` == "Low (<=2%)" & tcell_exhausted_interface == "Below Median" ~ "Low T cells-Low Exhaustion",
+#       `Interface cd3 high/low` != "Low (<=2%)" & tcell_exhausted_interface == "Above Median" ~ "High T cells-High Exhaustion",
+#       `Interface cd3 high/low` != "Low (<=2%)" & tcell_exhausted_interface == "Below Median" ~ "High T cells-Low Exhaustion"
+#   )) %>%
+#   mutate(tcell_cat_interface = factor(tcell_cat_interface, levels=c("No interface", "Low T cells-Low Exhaustion", "Low T cells-High Exhaustion", "High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#   
+# #cytotoxic
+#      mutate(tcell_cyto_cat = case_when (
+#             `cd3+ cd8+ high/low` == "Low (<=1%)" & tcell_cyto_exhausted == "Above Median"     ~ "Low T cells-High Exhaustion",
+#              `cd3+ cd8+ high/low` == "Low (<=1%)" & tcell_cyto_exhausted == "Below Median"   ~ "Low T cells-Low Exhaustion",
+#             `cd3+ cd8+ high/low` != "Low (<=1%)" & tcell_cyto_exhausted == "Above Median"     ~ "High T cells-High Exhaustion",
+#             `cd3+ cd8+ high/low` != "Low (<=1%)" & tcell_cyto_exhausted == "Below Median"     ~ "High T cells-Low Exhaustion"
+#             
+#   )) %>%
+#   mutate(tcell_cyto_cat = factor(tcell_cyto_cat, levels=c("Low T cells-Low Exhaustion", "Low T cells-High Exhaustion", 
+#                                                 "High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#   mutate(tcell_cyto_cat_stroma = case_when (
+#             `Stroma cd3+ cd8+ high/low` == "Low (<=1%)" & tcell_cyto_exhausted_stroma == "Above Median"   ~ "Low T cells-High Exhaustion",
+#              `Stroma cd3+ cd8+ high/low` == "Low (<=1%)" & tcell_cyto_exhausted_stroma == "Below Median"   ~ "Low T cells-Low Exhaustion",
+#             `Stroma cd3+ cd8+ high/low` != "Low (<=1%)" & tcell_cyto_exhausted_stroma == "Above Median"     ~ "High T cells-High Exhaustion",
+#             `Stroma cd3+ cd8+ high/low` != "Low (<=1%)" & tcell_cyto_exhausted_stroma == "Below Median"     ~ "High T cells-Low Exhaustion"
+#             
+#   )) %>%
+#   mutate(tcell_cyto_cat_stroma = factor(tcell_cyto_cat_stroma, levels=c("Low T cells-Low Exhaustion", "Low T cells-High Exhaustion",  "High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#     mutate(tcell_cyto_cat_interface = case_when (
+#       interface_percent <1 ~ "No interface",
+#       `Interface cd3+ cd8+ high/low` == "Low (<=1%)" & tcell_cyto_exhausted_interface == "Above Median" ~ "Low T cells-High Exhaustion",
+#       `Interface cd3+ cd8+ high/low` == "Low (<=1%)" & tcell_cyto_exhausted_interface == "Below Median" ~ "Low T cells-Low Exhaustion",
+#       `Interface cd3+ cd8+ high/low` != "Low (<=1%)" & tcell_cyto_exhausted_interface == "Above Median" ~ "High T cells-High Exhaustion",
+#       `Interface cd3+ cd8+ high/low` != "Low (<=1%)" & tcell_cyto_exhausted_interface == "Below Median" ~ "High T cells-Low Exhaustion"
+#   )) %>%
+#   mutate(tcell_cat_interface = factor(tcell_cat_interface, levels=c("No interface", "Low T cells-Low Exhaustion", "Low T cells-High Exhaustion", "High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#   
+#   
+# ## T cell Exhaustion Category - MEDIAN (HIGH TCELL samples only)
+#   mutate(high_tcell_exhausted = case_when(
+#     grepl("High", `cd3 high/low`)  ~      ifelse(tumor_tcell_timexhausted > 
+#                                        median(tumor_tcell_timexhausted[grepl("High", `cd3 high/low`)], na.rm = TRUE), 
+#                                            "Above Median", "Below Median")), 
+#         high_tcell_exhausted_stroma = case_when(
+#           grepl("High", `Stroma cd3 high/low`) ~      ifelse(stroma_tcell_timexhausted > 
+#                                        median(stroma_tcell_timexhausted[grepl("High", `Stroma cd3 high/low`)], na.rm = TRUE), 
+#                                            "Above Median", "Below Median")),
+#         high_tcell_cyto_exhausted = case_when(
+#           grepl("High", `cd3+ cd8+ high/low`)  ~      ifelse(tumor_tcell_timexhausted > 
+#                                        median(tumor_tcell_timexhausted[grepl("High", `cd3+ cd8+ high/low`)], na.rm = TRUE), 
+#                                            "Above Median", "Below Median")),
+#         high_tcell_cyto_exhausted_stroma = case_when(
+#           grepl("High", `Stroma cd3+ cd8+ high/low`) ~      ifelse(stroma_tcell_timexhausted > 
+#                                        median(stroma_tcell_timexhausted[grepl("High", `Stroma cd3+ cd8+ high/low`)], na.rm = TRUE), 
+#                                            "Above Median", "Below Median")) ) %>%
+# ## T CELL CATEGORY - MEDIANS v2
+#   mutate(tcell_cat2 = case_when (
+#             `cd3 high/low` == "Low (<=2%)"   ~ "Low T cells",
+#             `cd3 high/low` != "Low (<=2%)" & high_tcell_exhausted == "Above Median"     ~ "High T cells-High Exhaustion",
+#             `cd3 high/low` != "Low (<=2%)" & high_tcell_exhausted == "Below Median"     ~ "High T cells-Low Exhaustion"),
+#           tcell_cat2 = factor(tcell_cat2, levels=c("Low T cells", "High T cells-Low Exhaustion", "High T cells-High Exhaustion")),
+#           tcell_cat_stroma2 = case_when (
+#               `Stroma cd3 high/low` == "Low (<=2%)" ~ "Low T cells",
+#               `Stroma cd3 high/low` != "Low (<=2%)" & high_tcell_exhausted_stroma == "Above Median" ~ "High T cells-High Exhaustion",
+#               `Stroma cd3 high/low` != "Low (<=2%)" & high_tcell_exhausted_stroma == "Below Median" ~ "High T cells-Low Exhaustion"),
+#           tcell_cat_stroma2 = factor(tcell_cat_stroma2, levels=c("Low T cells", "High T cells-Low Exhaustion", "High T cells-High Exhaustion")),
+#           tcell_cyto_cat2 = case_when (
+#             `cd3+ cd8+ high/low` == "Low (<=1%)"   ~ "Low T cells",
+#             `cd3+ cd8+ high/low` != "Low (<=1%)" & high_tcell_cyto_exhausted == "Above Median"     ~ "High T cells-High Exhaustion",
+#             `cd3+ cd8+ high/low` != "Low (<=1%)" & high_tcell_cyto_exhausted == "Below Median"     ~ "High T cells-Low Exhaustion"),
+#           tcell_cyto_cat2 = factor(tcell_cyto_cat2, levels=c("Low T cells","High T cells-Low Exhaustion", "High T cells-High Exhaustion")),
+#           tcell_cyto_cat_stroma2 = case_when (
+#             `Stroma cd3+ cd8+ high/low` == "Low (<=1%)"    ~ "Low T cells",
+#             `Stroma cd3+ cd8+ high/low` != "Low (<=1%)" & high_tcell_cyto_exhausted_stroma == "Above Median"     ~ "High T cells-High Exhaustion",
+#             `Stroma cd3+ cd8+ high/low` != "Low (<=1%)" & high_tcell_cyto_exhausted_stroma == "Below Median"     ~ "High T cells-Low Exhaustion"),
+#             tcell_cyto_cat_stroma2 = factor(tcell_cyto_cat_stroma2, 
+#                                          levels=c("Low T cells", "High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#   mutate(tumor_stroma_tcellpheno = case_when(tcell_cat2=="Low T cells" & tcell_cat_stroma2 != "Low T cells" ~ "Immune excluded",
+#                                                     tcell_cat2=="Low T cells" | tcell_cat_stroma2 == "Low T cells"  ~ "Low T cells",
+#                                                     TRUE ~ "High T cells"),
+#                 tumor_stroma_exhpheno = case_when(tcell_cat2=="Low T cells" & tcell_cat_stroma2 == "High T cells-Low Exhaustion" ~ "Immune excluded-Not Exhausted",
+#                                                   tcell_cat2=="Low T cells" & tcell_cat_stroma2 == "High T cells-High Exhaustion" ~ "Immune excluded-Exhausted",
+#                                                   tcell_cat2=="Low T cells" | tcell_cat_stroma2 == "Low T cells"  ~ "Low T cells",
+#                                                   tcell_cat2=="High T cells-Low Exhaustion" & tcell_cat_stroma2 == "High T cells-Low Exhaustion" ~ "Neither Exhausted",
+#                                                   tcell_cat2=="High T cells-Low Exhaustion" & tcell_cat_stroma2 == "High T cells-High Exhaustion" ~ "Stroma Exhausted",
+#                                                   tcell_cat2=="High T cells-High Exhaustion" & tcell_cat_stroma2 == "High T cells-Low Exhaustion" ~ "Tumor Exhausted",
+#                                                   tcell_cat2=="High T cells-High Exhaustion" & tcell_cat_stroma2 == "High T cells-High Exhaustion" ~ "Both Exhausted",
+#                                                     TRUE ~ NA_character_),
+#                  tumor_stroma_exhpheno2 = case_when(tcell_cat2=="Low T cells" & tcell_cat_stroma2 == "High T cells-Low Exhaustion" ~ "Immune excluded-Not Exhausted",
+#                                                   tcell_cat2=="Low T cells" & tcell_cat_stroma2 == "High T cells-High Exhaustion" ~ "Immune excluded-Exhausted",
+#                                                   tcell_cat2=="Low T cells" | tcell_cat_stroma2 == "Low T cells"  ~ "Low T cells",
+#                                                   tcell_cat2=="High T cells-Low Exhaustion" & tcell_cat_stroma2 == "High T cells-Low Exhaustion" ~ "High T-Not Exhausted",
+#                                                   tcell_cat2=="High T cells-Low Exhaustion" & tcell_cat_stroma2 == "High T cells-High Exhaustion" ~ "High T-Exhausted",
+#                                                   tcell_cat2=="High T cells-High Exhaustion" & tcell_cat_stroma2 == "High T cells-Low Exhaustion" ~ "High T-Exhausted",
+#                                                   tcell_cat2=="High T cells-High Exhaustion" & tcell_cat_stroma2 == "High T cells-High Exhaustion" ~ "High T-Exhausted",
+#                                                     TRUE ~ NA_character_) ) 
+# 
+# 
+# 
+# data.limited <- compartment %>% filter(histotype2=="high-grade serous") %>%
+# #reset median cutoff for this dataset distribution
+#   mutate(tcell_exhausted =
+#           ifelse(tumor_tcell_timexhausted > median(tumor_tcell_timexhausted, na.rm = TRUE), "Above Median", "Below Median")) %>%
+#   mutate(tcell_exhausted_stroma = 
+#         ifelse(stroma_tcell_timexhausted > median(stroma_tcell_timexhausted, na.rm = TRUE),  "Above Median", "Below Median")) %>%
+#   mutate(tcell_exhausted_interface = 
+#         ifelse(interface_tcell_timexhausted > median(interface_tcell_timexhausted, na.rm = TRUE),  "Above Median", "Below Median")) %>%
+#   mutate(tcell_cyto_exhausted =
+#           ifelse(tumor_cyto_tcell_timexhausted > median(tumor_cyto_tcell_timexhausted, na.rm = TRUE), "Above Median", "Below Median")) %>%
+#   mutate(tcell_cyto_exhausted_stroma = 
+#         ifelse(stroma_cyto_tcell_timexhausted > median(stroma_cyto_tcell_timexhausted, na.rm = TRUE),  "Above Median", "Below Median")) %>%
+#   mutate(tcell_cyto_exhausted_interface = 
+#         ifelse(interface_cyto_tcell_timexhausted > median(interface_cyto_tcell_timexhausted, na.rm = TRUE),  "Above Median", "Below Median")) %>%
+#   
+# #exhaustion variable with low t cells by exhaustion  
+#   mutate(tcell_cat = case_when (
+#             `cd3 high/low` == "Low (<=2%)" & tcell_exhausted == "Above Median"     ~ "Low T cells-High Exhaustion",
+#              `cd3 high/low` == "Low (<=2%)" & tcell_exhausted == "Below Median"   ~ "Low T cells-Low Exhaustion",
+#             `cd3 high/low` != "Low (<=2%)" & tcell_exhausted == "Above Median"     ~ "High T cells-High Exhaustion",
+#             `cd3 high/low` != "Low (<=2%)" & tcell_exhausted == "Below Median"     ~ "High T cells-Low Exhaustion"
+#   )) %>%
+#   mutate(tcell_cat = factor(tcell_cat, levels=c("Low T cells-Low Exhaustion", "Low T cells-High Exhaustion", 
+#                                                 "High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#   mutate(tcell_cat_stroma = case_when (
+#         `Stroma cd3 high/low` == "Low (<=2%)" & tcell_exhausted_stroma == "Above Median" ~ "Low T cells-High Exhaustion",
+#         `Stroma cd3 high/low` == "Low (<=2%)" & tcell_exhausted_stroma == "Below Median" ~ "Low T cells-Low Exhaustion",
+#       `Stroma cd3 high/low` != "Low (<=2%)" & tcell_exhausted_stroma == "Above Median" ~ "High T cells-High Exhaustion",
+#       `Stroma cd3 high/low` != "Low (<=2%)" & tcell_exhausted_stroma == "Below Median" ~ "High T cells-Low Exhaustion"
+#   )) %>%
+#   mutate(tcell_cat_stroma = factor(tcell_cat_stroma, levels=c("Low T cells-Low Exhaustion", 
+#               "Low T cells-High Exhaustion","High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#   mutate(tcell_cat_interface = case_when (
+#       interface_percent <1 ~ "No interface",
+#       `Interface cd3 high/low` == "Low (<=2%)" & tcell_exhausted_interface == "Above Median" ~ "Low T cells-High Exhaustion",
+#       `Interface cd3 high/low` == "Low (<=2%)" & tcell_exhausted_interface == "Below Median" ~ "Low T cells-Low Exhaustion",
+#       `Interface cd3 high/low` != "Low (<=2%)" & tcell_exhausted_interface == "Above Median" ~ "High T cells-High Exhaustion",
+#       `Interface cd3 high/low` != "Low (<=2%)" & tcell_exhausted_interface == "Below Median" ~ "High T cells-Low Exhaustion"
+#   )) %>%
+#   mutate(tcell_cat_interface = factor(tcell_cat_interface, levels=c("No interface", "Low T cells-Low Exhaustion", "Low T cells-High Exhaustion", "High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#   
+# #cytotoxic
+#      mutate(tcell_cyto_cat = case_when (
+#             `cd3+ cd8+ high/low` == "Low (<=1%)" & tcell_cyto_exhausted == "Above Median"     ~ "Low T cells-High Exhaustion",
+#              `cd3+ cd8+ high/low` == "Low (<=1%)" & tcell_cyto_exhausted == "Below Median"   ~ "Low T cells-Low Exhaustion",
+#             `cd3+ cd8+ high/low` != "Low (<=1%)" & tcell_cyto_exhausted == "Above Median"     ~ "High T cells-High Exhaustion",
+#             `cd3+ cd8+ high/low` != "Low (<=1%)" & tcell_cyto_exhausted == "Below Median"     ~ "High T cells-Low Exhaustion"
+#             
+#   )) %>%
+#   mutate(tcell_cyto_cat = factor(tcell_cyto_cat, levels=c("Low T cells-Low Exhaustion", "Low T cells-High Exhaustion", 
+#                                                 "High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#   mutate(tcell_cyto_cat_stroma = case_when (
+#             `Stroma cd3+ cd8+ high/low` == "Low (<=1%)" & tcell_cyto_exhausted_stroma == "Above Median"   ~ "Low T cells-High Exhaustion",
+#              `Stroma cd3+ cd8+ high/low` == "Low (<=1%)" & tcell_cyto_exhausted_stroma == "Below Median"   ~ "Low T cells-Low Exhaustion",
+#             `Stroma cd3+ cd8+ high/low` != "Low (<=1%)" & tcell_cyto_exhausted_stroma == "Above Median"     ~ "High T cells-High Exhaustion",
+#             `Stroma cd3+ cd8+ high/low` != "Low (<=1%)" & tcell_cyto_exhausted_stroma == "Below Median"     ~ "High T cells-Low Exhaustion"
+#             
+#   )) %>%
+#   mutate(tcell_cyto_cat_stroma = factor(tcell_cyto_cat_stroma, levels=c("Low T cells-Low Exhaustion", "Low T cells-High Exhaustion",  "High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#     mutate(tcell_cyto_cat_interface = case_when (
+#       interface_percent <1 ~ "No interface",
+#       `Interface cd3+ cd8+ high/low` == "Low (<=1%)" & tcell_cyto_exhausted_interface == "Above Median" ~ "Low T cells-High Exhaustion",
+#       `Interface cd3+ cd8+ high/low` == "Low (<=1%)" & tcell_cyto_exhausted_interface == "Below Median" ~ "Low T cells-Low Exhaustion",
+#       `Interface cd3+ cd8+ high/low` != "Low (<=1%)" & tcell_cyto_exhausted_interface == "Above Median" ~ "High T cells-High Exhaustion",
+#       `Interface cd3+ cd8+ high/low` != "Low (<=1%)" & tcell_cyto_exhausted_interface == "Below Median" ~ "High T cells-Low Exhaustion"
+#   )) %>%
+#   mutate(tcell_cat_interface = factor(tcell_cat_interface, levels=c("No interface", "Low T cells-Low Exhaustion", "Low T cells-High Exhaustion", "High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#    
+# ## T cell Exhaustion Category - MEDIAN (HIGH TCELL samples only)
+#   mutate(high_tcell_exhausted = case_when(
+#     grepl("High", `cd3 high/low`)  ~      ifelse(tumor_tcell_timexhausted > 
+#                                        median(tumor_tcell_timexhausted[grepl("High", `cd3 high/low`)], na.rm = TRUE), 
+#                                            "Above Median", "Below Median")), 
+#         high_tcell_exhausted_stroma = case_when(
+#           grepl("High", `Stroma cd3 high/low`) ~      ifelse(stroma_tcell_timexhausted > 
+#                                        median(stroma_tcell_timexhausted[grepl("High", `Stroma cd3 high/low`)], na.rm = TRUE), 
+#                                            "Above Median", "Below Median")),
+#         high_tcell_cyto_exhausted = case_when(
+#           grepl("High", `cd3+ cd8+ high/low`)  ~      ifelse(tumor_tcell_timexhausted > 
+#                                        median(tumor_tcell_timexhausted[grepl("High", `cd3+ cd8+ high/low`)], na.rm = TRUE), 
+#                                            "Above Median", "Below Median")),
+#         high_tcell_cyto_exhausted_stroma = case_when(
+#           grepl("High", `Stroma cd3+ cd8+ high/low`) ~      ifelse(stroma_tcell_timexhausted > 
+#                                        median(stroma_tcell_timexhausted[grepl("High", `Stroma cd3+ cd8+ high/low`)], na.rm = TRUE), 
+#                                            "Above Median", "Below Median")) ) %>%
+# ## T CELL CATEGORY - MEDIANS v2
+#   mutate(tcell_cat2 = case_when (
+#             `cd3 high/low` == "Low (<=2%)"   ~ "Low T cells",
+#             `cd3 high/low` != "Low (<=2%)" & high_tcell_exhausted == "Above Median"     ~ "High T cells-High Exhaustion",
+#             `cd3 high/low` != "Low (<=2%)" & high_tcell_exhausted == "Below Median"     ~ "High T cells-Low Exhaustion"),
+#           tcell_cat2 = factor(tcell_cat2, levels=c("Low T cells", "High T cells-Low Exhaustion", "High T cells-High Exhaustion")),
+#           tcell_cat_stroma2 = case_when (
+#               `Stroma cd3 high/low` == "Low (<=2%)" ~ "Low T cells",
+#               `Stroma cd3 high/low` != "Low (<=2%)" & high_tcell_exhausted_stroma == "Above Median" ~ "High T cells-High Exhaustion",
+#               `Stroma cd3 high/low` != "Low (<=2%)" & high_tcell_exhausted_stroma == "Below Median" ~ "High T cells-Low Exhaustion"),
+#           tcell_cat_stroma2 = factor(tcell_cat_stroma2, levels=c("Low T cells", "High T cells-Low Exhaustion", "High T cells-High Exhaustion")),
+#           tcell_cyto_cat2 = case_when (
+#             `cd3+ cd8+ high/low` == "Low (<=1%)"   ~ "Low T cells",
+#             `cd3+ cd8+ high/low` != "Low (<=1%)" & high_tcell_cyto_exhausted == "Above Median"     ~ "High T cells-High Exhaustion",
+#             `cd3+ cd8+ high/low` != "Low (<=1%)" & high_tcell_cyto_exhausted == "Below Median"     ~ "High T cells-Low Exhaustion"),
+#           tcell_cyto_cat2 = factor(tcell_cyto_cat2, levels=c("Low T cells","High T cells-Low Exhaustion", "High T cells-High Exhaustion")),
+#           tcell_cyto_cat_stroma2 = case_when (
+#             `Stroma cd3+ cd8+ high/low` == "Low (<=1%)"    ~ "Low T cells",
+#             `Stroma cd3+ cd8+ high/low` != "Low (<=1%)" & high_tcell_cyto_exhausted_stroma == "Above Median"     ~ "High T cells-High Exhaustion",
+#             `Stroma cd3+ cd8+ high/low` != "Low (<=1%)" & high_tcell_cyto_exhausted_stroma == "Below Median"     ~ "High T cells-Low Exhaustion"),
+#             tcell_cyto_cat_stroma2 = factor(tcell_cyto_cat_stroma2, 
+#                                          levels=c("Low T cells", "High T cells-Low Exhaustion", "High T cells-High Exhaustion"))) %>%
+#   mutate(tumor_stroma_tcellpheno = case_when(tcell_cat2=="Low T cells" & tcell_cat_stroma2 != "Low T cells" ~ "Immune excluded",
+#                                                     tcell_cat2=="Low T cells" | tcell_cat_stroma2 == "Low T cells"  ~ "Low T cells",
+#                                                     TRUE ~ "High T cells"),
+#                 tumor_stroma_exhpheno = case_when(tcell_cat2=="Low T cells" & tcell_cat_stroma2 == "High T cells-Low Exhaustion" ~ "Immune excluded-Not Exhausted",
+#                                                   tcell_cat2=="Low T cells" & tcell_cat_stroma2 == "High T cells-High Exhaustion" ~ "Immune excluded-Exhausted",
+#                                                   tcell_cat2=="Low T cells" | tcell_cat_stroma2 == "Low T cells"  ~ "Low T cells",
+#                                                   tcell_cat2=="High T cells-Low Exhaustion" & tcell_cat_stroma2 == "High T cells-Low Exhaustion" ~ "Neither Exhausted",
+#                                                   tcell_cat2=="High T cells-Low Exhaustion" & tcell_cat_stroma2 == "High T cells-High Exhaustion" ~ "Stroma Exhausted",
+#                                                   tcell_cat2=="High T cells-High Exhaustion" & tcell_cat_stroma2 == "High T cells-Low Exhaustion" ~ "Tumor Exhausted",
+#                                                   tcell_cat2=="High T cells-High Exhaustion" & tcell_cat_stroma2 == "High T cells-High Exhaustion" ~ "Both Exhausted",
+#                                                     TRUE ~ NA_character_),
+#                  tumor_stroma_exhpheno2 = case_when(tcell_cat2=="Low T cells" & tcell_cat_stroma2 == "High T cells-Low Exhaustion" ~ "Immune excluded-Not Exhausted",
+#                                                   tcell_cat2=="Low T cells" & tcell_cat_stroma2 == "High T cells-High Exhaustion" ~ "Immune excluded-Exhausted",
+#                                                   tcell_cat2=="Low T cells" | tcell_cat_stroma2 == "Low T cells"  ~ "Low T cells",
+#                                                   tcell_cat2=="High T cells-Low Exhaustion" & tcell_cat_stroma2 == "High T cells-Low Exhaustion" ~ "High T-Not Exhausted",
+#                                                   tcell_cat2=="High T cells-Low Exhaustion" & tcell_cat_stroma2 == "High T cells-High Exhaustion" ~ "High T-Exhausted",
+#                                                   tcell_cat2=="High T cells-High Exhaustion" & tcell_cat_stroma2 == "High T cells-Low Exhaustion" ~ "High T-Exhausted",
+#                                                   tcell_cat2=="High T cells-High Exhaustion" & tcell_cat_stroma2 == "High T cells-High Exhaustion" ~ "High T-Exhausted",
+#                                                     TRUE ~ NA_character_) ) 
+# 
+# 
+# data <- data %>% set_variable_labels(  
+#                                              
+#                                       tumor_stroma_tcellpheno = "Tumor-Stroma Abundance",
+#                                       tumor_stroma_exhpheno = "Tumor-Stroma Exhaustion",
+#                                       tumor_stroma_exhpheno2 = "Tumor-Stroma Exhaustion",
+#                                       
+#                                      tcell_exhausted= "Tumor Exhausted T cell Grouped",
+#                                      tcell_exhausted_stroma= "Stroma Exhausted T cell Grouped",
+#                                      tcell_exhausted_interface= "Interface Exhausted T cell Grouped",
+#                                      tcell_cyto_exhausted= "Tumor Exhausted Cyto T cell Grouped",
+#                                      tcell_cyto_exhausted_stroma= "Stroma Exhausted Cyto T cell Grouped",
+#                                      tcell_cyto_exhausted_interface= "Interface Exhausted Cyto T cell Grouped",
+#                                     
+#                                      high_tcell_exhausted= "Tumor Exhausted T cell Grouped, Median v2",
+#                                      high_tcell_exhausted_stroma= "Stroma Exhausted T cell Grouped, Median v2",
+#                                      high_tcell_exhausted_interface= "Interface Exhausted T cell Grouped, Median v2",
+#                                      high_tcell_cyto_exhausted= "Tumor Exhausted Cyto T cell Grouped, Median v2",
+#                                      high_tcell_cyto_exhausted_stroma= "Stroma Exhausted Cyto T cell Grouped, Median v2",
+#                                      high_tcell_cyto_exhausted_interface= "Interface Exhausted Cyto T cell Grouped, Median v2",
+#                                 
+#                                      
+#                                      tcell_cat = "Tumor T cell Exhaustion (TIM3+)",
+#                                      tcell_cyto_cat = "Tumor Cyto T cell Exhaustion (TIM3+)",
+#                                      tcell_cat_stroma = "Stroma T cell Exhaustion (TIM3+)",
+#                                      tcell_cyto_cat_stroma = "Stroma Cyto T cell Exhaustion (TIM3+)",
+#                                      tcell_cat_interface = "Interface T cell Exhaustion (TIM3+)",
+#                                      tcell_cyto_cat_interface = "Interface Cyto T cell Exhaustion (TIM3+)",
+#                                      
+#                                      tcell_cat2 = "Tumor T cell Exhaustion (Median v2)",
+#                                      tcell_cyto_cat2 = "Tumor Cyto T cell Exhaustion (Median v2)",
+#                                      tcell_cat_stroma2 = "Stroma T cell Exhaustion (Median v2)",
+#                                      tcell_cyto_cat_stroma2 = "Stroma Cyto T cell Exhaustion (Median v2)",
+#                                      tcell_cat_interface2 = "Interface T cell Exhaustion (Median v2)",
+#                                      tcell_cyto_cat_interface2 = "Interface Cyto T cell Exhaustion (Median v2)")
+# 
+# data.limited <- data.limited %>% set_variable_labels(         
+#                                       tumor_stroma_tcellpheno = "Tumor-Stroma Abundance",
+#                                       tumor_stroma_exhpheno = "Tumor-Stroma Exhaustion",
+#                                       tumor_stroma_exhpheno2 = "Tumor-Stroma Exhaustion",
+#                                      tcell_exhausted= "Tumor Exhausted T cell Grouped",
+#                                      tcell_exhausted_stroma= "Stroma Exhausted T cell Grouped",
+#                                      tcell_exhausted_interface= "Interface Exhausted T cell Grouped",
+#                                      tcell_cyto_exhausted= "Tumor Exhausted Cyto T cell Grouped",
+#                                      tcell_cyto_exhausted_stroma= "Stroma Exhausted Cyto T cell Grouped",
+#                                      tcell_cyto_exhausted_interface= "Interface Exhausted Cyto T cell Grouped",
+#                                     
+#                                      high_tcell_exhausted= "Tumor Exhausted T cell Grouped, Median v2",
+#                                      high_tcell_exhausted_stroma= "Stroma Exhausted T cell Grouped, Median v2",
+#                                      high_tcell_exhausted_interface= "Interface Exhausted T cell Grouped, Median v2",
+#                                      high_tcell_cyto_exhausted= "Tumor Exhausted Cyto T cell Grouped, Median v2",
+#                                      high_tcell_cyto_exhausted_stroma= "Stroma Exhausted Cyto T cell Grouped, Median v2",
+#                                      high_tcell_cyto_exhausted_interface= "Interface Exhausted Cyto T cell Grouped, Median v2",
+#                                 
+#                                      
+#                                      tcell_cat = "Tumor T cell Exhaustion (TIM3+)",
+#                                      tcell_cyto_cat = "Tumor Cyto T cell Exhaustion (TIM3+)",
+#                                      tcell_cat_stroma = "Stroma T cell Exhaustion (TIM3+)",
+#                                      tcell_cyto_cat_stroma = "Stroma Cyto T cell Exhaustion (TIM3+)",
+#                                      tcell_cat_interface = "Interface T cell Exhaustion (TIM3+)",
+#                                      tcell_cyto_cat_interface = "Interface Cyto T cell Exhaustion (TIM3+)",
+#                                      
+#                                      tcell_cat2 = "Tumor T cell Exhaustion (Median v2)",
+#                                      tcell_cyto_cat2 = "Tumor Cyto T cell Exhaustion (Median v2)",
+#                                      tcell_cat_stroma2 = "Stroma T cell Exhaustion (Median v2)",
+#                                      tcell_cyto_cat_stroma2 = "Stroma Cyto T cell Exhaustion (Median v2)",
+#                                      tcell_cat_interface2 = "Interface T cell Exhaustion (Median v2)",
+#                                      tcell_cyto_cat_interface2 = "Interface Cyto T cell Exhaustion (Median v2)")
+```
+
+
+```{r}
+spatial_log_data %>% 
+  select(logit_prop, logit_stroma_prop, cd8p_cd8n_logratio, cd8p_cd8n_stroma_logratio,
+         set, refage, stage_cat) %>%
+  tbl_summary() %>%
+  bold_labels() 
+```
+
+
+## Continuous Models
+## A. T cell abundance
+### 1. CD3
+```{r}
+coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_prop  +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) %>% 
+  tbl_regression(exponentiate = TRUE,
+                 include = c("logit_prop")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+
+coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_stroma_prop  +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) %>% 
+  tbl_regression(exponentiate = TRUE,
+                 include = c("logit_stroma_prop")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+```
+
+### 2. CD8
+```{r}
+coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_prop  + cd8p_cd8n_logratio +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) %>% 
+  tbl_regression(exponentiate = TRUE,
+                 include = c("logit_prop", "cd8p_cd8n_logratio")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+
+coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_stroma_prop  + cd8p_cd8n_stroma_logratio +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) %>% 
+  tbl_regression(exponentiate = TRUE,
+                 include = c("logit_stroma_prop", "cd8p_cd8n_stroma_logratio")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+```
+
+## B. Tumor+Stroma Models
+### 1. CD3
+```{r}
+fitwts <- coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_prop + logit_stroma_prop +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) 
+vif(fitwts)
+fitwts %>% tbl_regression(exponentiate = TRUE,
+                          include = c("logit_prop",  "logit_stroma_prop")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+```
+
+
+### 2. CD8
+```{r}
+fitwts <- coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_cytoprop + logit_stroma_cytoprop +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE)
+#vif(fitwts)
+fitwts %>% tbl_regression(exponentiate = TRUE,
+                          include = c("logit_cytoprop",  "logit_stroma_cytoprop")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+```
+
+### 3. CD8+/CD8- Ratio
+```{r}
+coxph(Surv(int_to_event_mos, vital_status_fin) ~  
+        cd8p_cd8n_logratio + cd8p_cd8n_stroma_logratio +
+        set + refage + stage_cat + histo_grade, 
+      data = spatial_log_data, x = TRUE) %>% 
+  tbl_regression(exponentiate = TRUE,
+                 include = c("cd8p_cd8n_logratio",  "cd8p_cd8n_stroma_logratio")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+```
+
+
+## C. Final abundance multivariable - no interactions
+```{r Bretts final model}
+fitwts <- coxph(Surv(int_to_event_mos, vital_status_fin) ~ 
+                  logit_prop + logit_stroma_prop  + cd8p_cd8n_logratio  + cd8p_cd8n_stroma_logratio +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) 
+#vif(fitwts)
+fitwts %>% 
+  tbl_regression(exponentiate = TRUE,
+                 include = c("logit_prop",  "logit_stroma_prop", 
+                             "cd8p_cd8n_logratio", "cd8p_cd8n_stroma_logratio")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+```
+
+## D. T cell clustering
+```{r}
+spatial_log_data %>% 
+  select(ends_with("_ripley")) %>%
+  tbl_summary() %>%
+  bold_labels() 
+```
+
+### 1. CD3
+```{r}
+coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_cd3tumor_ripley  +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) %>% 
+  tbl_regression(exponentiate = TRUE,
+                 include = c("logit_cd3tumor_ripley")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+
+coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_cd3stroma_ripley  +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) %>% 
+  tbl_regression(exponentiate = TRUE,
+                 include = c("logit_cd3stroma_ripley")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+
+coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_cd3tumor_ripley + logit_cd3stroma_ripley+
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) %>% 
+  tbl_regression(exponentiate = TRUE,
+                 include = c("logit_cd3tumor_ripley", "logit_cd3stroma_ripley")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+```
+
+### 2. CD8
+```{r}
+coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_cd8tumor_ripley  +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) %>% 
+  tbl_regression(exponentiate = TRUE,
+                 include = c("logit_cd8tumor_ripley")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+
+coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_cd8stroma_ripley  +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) %>% 
+  tbl_regression(exponentiate = TRUE,
+                 include = c("logit_cd8stroma_ripley")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+
+coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_cd8tumor_ripley + logit_cd8stroma_ripley +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) %>% 
+  tbl_regression(exponentiate = TRUE,
+                 include = c("logit_cd8tumor_ripley", "logit_cd8stroma_ripley")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+```
+
+## E. Tumor+Stroma Models
+```{r}
+fitwts <- coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_cd3tumor_ripley + logit_cd3stroma_ripley +
+                  logit_cd8tumor_ripley + logit_cd8stroma_ripley +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) 
+
+fitwts %>% tbl_regression(exponentiate = TRUE,
+                          include = c("logit_cd3tumor_ripley",  "logit_cd3stroma_ripley",
+                                      "logit_cd8tumor_ripley", "logit_cd8stroma_ripley")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+
+fitwts <- coxph(Surv(int_to_event_mos, vital_status_fin) ~ logit_cd3tumor_ripley + 
+                  logit_cd8tumor_ripley + logit_cd8stroma_ripley +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) 
+
+fitwts %>% tbl_regression(exponentiate = TRUE,
+                          include = c("logit_cd3tumor_ripley",  
+                                      "logit_cd8tumor_ripley", "logit_cd8stroma_ripley")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+
+
+
+
+
+fitwts <- coxph(Surv(int_to_event_mos, vital_status_fin) ~ tumor_cd3plus_do_ce_k_border_sdhr + 
+                  tumor_cd3plus_cd8plus_do_ce_k_border_sdhr + stroma_cd3plus_cd8plus_do_ce_k_border_sdhr +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) 
+
+fitwts %>% tbl_regression(exponentiate = TRUE,
+                          include = c("tumor_cd3plus_do_ce_k_border_sdhr",  
+                                      "tumor_cd3plus_cd8plus_do_ce_k_border_sdhr", "stroma_cd3plus_cd8plus_do_ce_k_border_sdhr")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+```
+
+
+
+
+
+???
+```{r}
+fitwts <- coxph(Surv(int_to_event_mos, vital_status_fin) ~ 
+                  logit_prop + logit_stroma_prop  + cd8p_cd8n_logratio  + cd8p_cd8n_stroma_logratio +
+                  logit_cd3tumor_ripley + logit_cd3stroma_ripley +
+                  logit_cd8tumor_ripley + logit_cd8stroma_ripley +
+                  set + refage + stage_cat + histo_grade, 
+                data = spatial_log_data, x = TRUE) 
+#vif(fitwts)
+fitwts %>% 
+  tbl_regression(exponentiate = TRUE,
+                 include = c("logit_prop",  "logit_stroma_prop", 
+                             "cd8p_cd8n_logratio", "cd8p_cd8n_stroma_logratio",
+                             "logit_cd3tumor_ripley",  "logit_cd3stroma_ripley",
+                             "logit_cd8tumor_ripley", "logit_cd8stroma_ripley")) %>% 
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**MVA**")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Stratify by Immune Infiltration 
+
+
+
+
+
+<!-- ## T cell abundance /difference by clinical/tumor characteristics -->
+
+
+
+<!-- ```{r} -->
+
+<!-- tbl_uvregression( -->
+<!--   data, -->
+<!--   method = lm, -->
+<!--   y = logit_cytoprop, -->
+<!--   include = c("stage_cat", "grade_cat", "histotype2", "subtype", "smokever", "smokcurrent" , "famhxbrov", "diab", "cancer", "BMI_recent") -->
+<!-- ) %>% modify_caption("Logit Cyto Prop") -->
+
+<!-- tbl_uvregression( -->
+<!--   data, -->
+<!--   method = lm, -->
+<!--   y = logit_stroma_cytoprop, -->
+<!--   include = c("stage_cat", "grade_cat", "histotype2", "subtype", "smokever", "smokcurrent" , "famhxbrov", "diab", "cancer", "BMI_recent") -->
+<!-- ) %>% modify_caption(" Stroma Logit Cyto Prop") -->
+
+<!-- tbl_uvregression( -->
+<!--   data, -->
+<!--   method = lm, -->
+<!--   y = logit_cytoprop_relative, -->
+<!--   include = c("stage_cat", "grade_cat", "histotype2", "subtype", "smokever", "smokcurrent" , "famhxbrov", "diab", "cancer", "BMI_recent") -->
+<!-- ) %>% modify_caption("Logit Cyto Prop Relative") -->
+
+<!-- tbl_uvregression( -->
+<!--   data, -->
+<!--   method = lm, -->
+<!--   y = logit_stroma_cytoprop_relative, -->
+<!--   include = c("stage_cat", "grade_cat", "histotype2", "subtype", "smokever", "smokcurrent" , "famhxbrov", "diab", "cancer", "BMI_recent") -->
+<!-- ) %>% modify_caption(" Stroma Logit Cyto Prop Relative") -->
+<!-- ``` -->
+
+
+
+# Effect of boundary length on immune abundance or ripley
+```{r ggcorrplot}
+library(ggcorrplot)
+
+spat_corr <- spatial_data %>%
+  select(contains("_percent"),
+         -c(contains("tim3"), contains("pd1"), contains("minus")), 
+         boundary_length
+         )
+  # `colnames<-`(str_remove(colnames(.), "l3midavg_") %>% str_remove(., "l3mid"))
+  
+spat_corr <- cor(spat_corr, use = "pairwise.complete.obs")
+spat_corr2 <- spat_corr %>% as_tibble(rownames = "features")
+
+spat_corr3 <- spat_corr2 %>%
+  select(features, boundary_length) %>% 
+  filter(features != "boundary_length") %>% 
+  column_to_rownames(var = "features") %>% 
+  as.matrix()
+
+ggcorrplot(spat_corr3, #hc.order = TRUE, 
+           method = "circle", 
+           # type = "lower", 
+           lab = TRUE, 
+           title = "Correlation between boundary length and immune abundance",
+           show.legend = TRUE, legend.title = "Correlation", show.diag = TRUE,
+           lab_col = "darkblue", lab_size = 3, 
+           sig.level = 0.05, insig = c("pch", "blank"), pch = 4, pch.col = "black", pch.cex = 10, 
+           tl.cex = 10, tl.col = "green", tl.srt = 40,
+           digits = 2
+)
+
+
+spat_corr <- spatial_data %>%
+  select(ends_with("_do_ce_k_border"),
+         -c(contains("tim3"), contains("pd1"), contains("minus")), 
+         boundary_length
+         )
+  # `colnames<-`(str_remove(colnames(.), "l3midavg_") %>% str_remove(., "l3mid"))
+  
+spat_corr <- cor(spat_corr, use = "pairwise.complete.obs")
+spat_corr2 <- spat_corr %>% as_tibble(rownames = "features")
+
+spat_corr3 <- spat_corr2 %>%
+  select(features, boundary_length) %>% 
+  filter(features != "boundary_length") %>% 
+  column_to_rownames(var = "features") %>% 
+  as.matrix()
+
+ggcorrplot(spat_corr3, #hc.order = TRUE, 
+           method = "circle", 
+           # type = "lower", 
+           lab = TRUE, 
+           title = "Correlation between boundary_length and ripley",
+           show.legend = TRUE, legend.title = "Correlation", show.diag = TRUE,
+           lab_col = "darkblue", lab_size = 3, 
+           sig.level = 0.05, insig = c("pch", "blank"), pch = 4, pch.col = "black", pch.cex = 10, 
+           tl.cex = 10, tl.col = "green", tl.srt = 40,
+           digits = 2
+)
+```
+
+
+
+
+# Reverse analysis
+## Distribution
+```{r}
+spatial_data1 %>% 
+  select(ends_with("_5cat")) %>% 
+  tbl_summary() %>%
+  bold_labels() 
+```
+
+
+## HR
+```{r}
+tbl_uvregression(
+  spatial_data1 %>% select(int_to_event_mos, vital_status_fin, 
+                           ends_with("_5cat")),
+  method = coxph,
+  y = Surv(time = int_to_event_mos, event = vital_status_fin),
+  exponentiate = TRUE
+) %>%
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**UVA**")
+```
+
+Increased HR in case of clustering of PD1+ cells but it might only mean there is more cells.
+```{r fig.height=40}
+spatial_data1 %>% 
+  select(suid, 
+         tumor_cd19plus_do_ce_k_border_sdhr_5cat,
+         tumor_cd3plus_cd8plus_do_ce_k_border_sdhr_5cat,
+         tumor_cd3plus_cd8plus_pd1plus_do_ce_k_border_sdhr_5cat,
+         tumor_cd3plus_cd8minus_pd1plus_do_ce_k_border_sdhr_5cat,
+         tumor_cd8plus_do_ce_k_border_sdhr_5cat,
+         tumor_pd1plus_do_ce_k_border_sdhr_5cat,
+         # stroma_cd19plus_do_ce_k_border_5cat,
+         # stroma_cd3plus_cd8plus_do_ce_k_border_5cat,
+         # stroma_cd3plus_cd8plus_pd1plus_do_ce_k_border_5cat,
+         # stroma_cd3plus_cd8minus_pd1plus_do_ce_k_border_5cat,
+         # stroma_cd3plus_pd1plus_do_ce_k_border_5cat,
+         # stroma_cd8plus_do_ce_k_border_5cat,
+         tumor_percent_cd19_cells,
+         tumor_percent_cd3plus_cd8plus_cells,
+         tumor_percent_cd3plus_cd8plus_pd1plus_cells,
+         tumor_percent_cd3plus_cd8minus_pd1plus_cells#,
+         # tumor_percent_cd8_cells,
+         # tumor_percent_pd1_cells
+         ) %>% 
+
+  pivot_longer(cols = c(contains("_5cat")), 
+               values_to = "cluster_cat",
+               names_to = "cluster_type") %>% 
+
+  pivot_longer(cols = c(contains("percent")), 
+               values_to = "cell_abundance",
+               names_to = "cell_type") %>% 
+  mutate(cluster_cell_type = str_remove_all(cluster_type, "tumor_|stroma_|interface_|_do_ce_k_border_sdhr_5cat")) %>% 
+  mutate(cell_type_abundance = str_remove_all(cell_type, "tumor_|stroma_|interface_|percent_|_cells")) %>% 
+  filter(!is.na(cluster_cat)) %>% 
+  
+
+  ggplot(aes(x = cell_abundance, y = cluster_cat, color = cell_type_abundance, fill = cell_type_abundance)) +
+  geom_density_ridges(alpha=0.1, scale = 1) +
+  theme_ridges()+
+  theme(#axis.title.y = element_blank(),
+        #axis.text.y = element_blank(),
+        panel.spacing = unit(0.1, "lines"),
+        # strip.text.x = element_text(size = 8),
+        legend.title = element_blank(),
+        legend.position = "inside",
+        legend.position.inside = c(0.3, 0.4)
+  )+
+  scale_y_discrete(expand = c(0, 0.1))+
+  facet_wrap(~ cluster_cell_type, ncol = 1, scales = "free_x")
+```
+
+```{r ridges 5cat, fig.height=20, fig.width=10}
+spatial_data1 %>% 
+  select(suid, 
+         tumor_cd19plus_do_ce_k_border_sdhr_5cat,
+         tumor_cd3plus_cd8plus_do_ce_k_border_sdhr_5cat,
+         tumor_cd3plus_cd8plus_pd1plus_do_ce_k_border_sdhr_5cat,
+         tumor_cd3plus_cd8minus_pd1plus_do_ce_k_border_sdhr_5cat,
+         tumor_cd8plus_do_ce_k_border_sdhr_5cat,
+         tumor_pd1plus_do_ce_k_border_sdhr_5cat,
+         # stroma_cd19plus_do_ce_k_border_5cat,
+         # stroma_cd3plus_cd8plus_do_ce_k_border_5cat,
+         # stroma_cd3plus_cd8plus_pd1plus_do_ce_k_border_5cat,
+         # stroma_cd3plus_cd8minus_pd1plus_do_ce_k_border_5cat,
+         # stroma_cd3plus_pd1plus_do_ce_k_border_5cat,
+         # stroma_cd8plus_do_ce_k_border_5cat,
+         tumor_percent_cd19_cells,
+         tumor_percent_cd3plus_cd8plus_cells,
+         tumor_percent_cd3plus_cd8plus_pd1plus_cells,
+         tumor_percent_cd3plus_cd8minus_pd1plus_cells#,
+         # tumor_percent_cd8_cells,
+         # tumor_percent_pd1_cells
+         ) %>% 
+
+  pivot_longer(cols = c(contains("_5cat")), 
+               values_to = "cluster_cat",
+               names_to = "cluster_type") %>% 
+
+  pivot_longer(cols = c(contains("percent")), 
+               values_to = "cell_abundance",
+               names_to = "cell_type") %>% 
+  mutate(cluster_cell_type = str_remove_all(cluster_type, "tumor_|stroma_|interface_|_do_ce_k_border_sdhr_5cat")) %>% 
+  mutate(cell_type_abundance = str_remove_all(cell_type, "tumor_|stroma_|interface_|percent_|_cells")) %>% 
+  filter(!is.na(cluster_cat)) %>% 
+  
+
+  ggplot(aes(x = cell_abundance, y = cluster_cat, color = cell_type_abundance, fill = cell_type_abundance)) +
+  geom_density_ridges(alpha=0.1, scale = 1) +
+  theme_ridges()+
+  theme(#axis.title.y = element_blank(),
+        #axis.text.y = element_blank(),
+        panel.spacing = unit(0.1, "lines"),
+        # strip.text.x = element_text(size = 8),
+        legend.title = element_blank(),
+        legend.position = "bottom"
+  )+
+  scale_y_discrete(expand = c(0, 0.1))+
+  scale_color_discrete(guide = guide_legend(nrow = 2))+
+  facet_wrap(cell_type_abundance ~ cluster_cell_type, ncol = 6, scales = "free_x")
+```
+
+## Plot death?
+```{r plot death vs abundance-ripley, fig.height=15, fig.width=10}
+spatial_data1 %>% 
+  select(suid, vital_status_fin,
+         tumor_cd19plus_do_ce_k_border,
+         tumor_cd3plus_cd8plus_do_ce_k_border,
+         tumor_cd3plus_cd8plus_pd1plus_do_ce_k_border,
+         tumor_cd3plus_cd8minus_pd1plus_do_ce_k_border,
+         tumor_cd8plus_do_ce_k_border,
+         tumor_pd1plus_do_ce_k_border,
+         tumor_percent_cd19_cells,
+         tumor_percent_cd3plus_cd8plus_cells,
+         tumor_percent_cd3plus_cd8plus_pd1plus_cells,
+         tumor_percent_cd3plus_cd8minus_pd1plus_cells,
+         -c(contains("tim3"))) %>% 
+  mutate(vital_status_fin = factor(vital_status_fin)) %>% 
+  pivot_longer(cols = c(contains("_do_ce_k_border")), 
+               values_to = "cluster_dist",
+               names_to = "cluster_type") %>% 
+  pivot_longer(cols = c(contains("percent")), 
+               values_to = "cell_abundance",
+               names_to = "cell_type") %>% 
+  
+  mutate(cluster_cell_type = str_remove_all(cluster_type, "tumor_|stroma_|interface_|_do_ce_k_border")) %>% 
+  mutate(cell_type_abundance = str_remove_all(cell_type, "tumor_|stroma_|interface_|_cells")) %>% 
+  
+  ggplot(aes(y = cell_abundance, x = cluster_dist, color = vital_status_fin)) + 
+  geom_point(alpha = 0.5) +
+  ggtitle("Death in Immune cell clustering and abundance")+
+  scale_x_log10()+ scale_y_log10()+
+  labs(x = "Ripley's K", y = "Abundance", color = "Death")+
+  facet_wrap(cluster_cell_type ~ cell_type_abundance, ncol = 4, scales = "free", strip.position = c("top"))+
+  theme(legend.position = "bottom"
+  )
+```
+
+
+
+
+# Ratio ripley / abundance
+```{r Ratio ripley - abundance}
+spatial_data2 <- spatial_data1 %>% 
+  mutate(tumor_cd19plus_cluster_ratio = tumor_cd19plus_do_ce_k_border / tumor_percent_cd19_cells,
+         tumor_cd3plus_cluster_ratio = tumor_cd3plus_do_ce_k_border / tumor_percent_cd3_cells,
+         tumor_cd8plus_cluster_ratio = tumor_cd8plus_do_ce_k_border / tumor_percent_cd8_cells,
+         tumor_pd1plus_cluster_ratio = tumor_pd1plus_do_ce_k_border / tumor_percent_pd1_cells,
+         tumor_cd3plus_cd8plus_cluster_ratio = tumor_cd3plus_cd8plus_do_ce_k_border / tumor_percent_cd3plus_cd8plus_cells,
+         tumor_cd3plus_cd8plus_pd1plus_cluster_ratio = tumor_cd3plus_cd8plus_pd1plus_do_ce_k_border / tumor_percent_cd3plus_cd8plus_pd1plus_cells,
+         tumor_cd3plus_cd8minus_cluster_ratio = tumor_cd3plus_cd8minus_do_ce_k_border / tumor_percent_cd3plus_cd8minus_cells,
+         tumor_cd3plus_cd8minus_pd1plus_cluster_ratio = tumor_cd3plus_cd8minus_pd1plus_do_ce_k_border / tumor_percent_cd3plus_cd8minus_pd1plus_cells,
+         tumor_cd3plus_pd1plus_cluster_ratio = tumor_cd3plus_pd1plus_do_ce_k_border / tumor_percent_cd3plus_pd1plus_cells
+         ) %>% 
+  mutate(across(c(contains("cluster_ratio")), ~ . / sd(., na.rm = TRUE) , .names = "{.col}_sdhr"))
+```
+
+```{r UVA Ratio ripley - abundance}
+spatial_data2 %>% select(ends_with("cluster_ratio"),
+                         ends_with("cluster_ratio_sdhr")) %>% 
+  tbl_summary(statistic = list(all_continuous() ~ "{mean} ({sd})")) %>% 
+  bold_labels()
+
+
+tbl_uvregression(
+  spatial_data2 %>% select(int_to_event_mos, vital_status_fin, 
+                           ends_with("cluster_ratio_sdhr")),
+  method = coxph,
+  y = Surv(time = int_to_event_mos, event = vital_status_fin),
+  exponentiate = TRUE
+) %>%
+  bold_p(t = .05) %>%
+  add_nevent(location = "level") %>% add_n(location = "level") %>%
+  bold_labels() %>% italicize_levels() %>%
+  modify_header(label ~ "**UVA**")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
