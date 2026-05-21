@@ -458,25 +458,53 @@ spatial_data %>%
 ```
 
 ## B. HR
-Increased immune cell clustering is associated with better survival when using 1-SD normalization. 
+Increased immune cell abundance is associated with poorer survival when using 1-SD normalization or categorical variables. 
 ```{r}
 tbl_uvregression(
-  spatial_data %>% select(int_to_event_mos, vital_status_fin, 
-                          contains("tumor") & contains("do_ce_k_border_sdhr"), 
-                          contains("stroma") & contains("do_ce_k_border_sdhr"),
-                          "interface_cd3plus_do_ce_k_border_sdhr", "interface_cd3plus_cd8plus_do_ce_k_border_sdhr"),
+  spatial_data %>% select(int_to_event_mos, vital_status_fin,
+                          contains("percent") & contains("_sdhr")),
   method = coxph,
   y = Surv(time = int_to_event_mos, event = vital_status_fin),
   exponentiate = TRUE#,
-  # include = c("tumor_cd3plus_do_ce_k_border_sdhr", "tumor_cd3plus_cd8plus_do_ce_k_border_sdhr", 
-  #             "stroma_cd3plus_do_ce_k_border_sdhr", "stroma_cd3plus_cd8plus_do_ce_k_border_sdhr", 
-  #             "interface_cd3plus_do_ce_k_border_sdhr", "interface_cd3plus_cd8plus_do_ce_k_border_sdhr"
-  # )
-  ) %>%
+  # include = c("tumor_percent_cd3_cells_sdhr", "tumor_percent_cd3plus_cd8plus_cells_sdhr", 
+  #             "stroma_percent_cd3_cells_sdhr", "stroma_percent_cd3plus_cd8plus_cells_sdhr", 
+  #             "interface_percent_cd3plus_cells_sdhr", "interface_percent_cd3plus_cd8plus_cells_sdhr",
+  #             "tumor_cd3_high_low", "tumor_cd3_cd8_high_low", 
+  #             "stroma_cd3_high_low", "stroma_cd3_cd8_high_low", 
+  #             "interface_cd3_high_low", "interface_cd3_cd8_high_low"  )
+) %>%
   bold_p(t = .05) %>%
   add_nevent(location = "level") %>% add_n(location = "level") %>%
   bold_labels() %>% italicize_levels() %>%
   modify_header(label ~ "**UVA**")
+
+spat_vars <- spatial_data %>% select(
+                          contains("percent") & contains("_sdhr")) %>%
+  names()
+
+# Create a list to store the results
+cox_mva_fct <- lapply(spat_vars, function(var) {
+  # Build the formula dynamically
+  formula <- as.formula(paste("Surv(int_to_event_mos, vital_status_fin) ~", 
+                              var, 
+                              # "+ logit_prop + logit_stroma_prop  + cd8p_cd8n_logratio  + cd8p_cd8n_stroma_logratio",
+                              "+ set + refage + stage_cat + histo_grade"))
+  
+  # Fit the Cox model
+  cox_model <- coxph(formula, data = spatial_data)
+  
+  # Create a regression table for each model
+  tbl_regression(cox_model, exponentiate = TRUE, include = var) %>%
+    bold_p(t = 0.05) %>%
+    add_nevent(location = "level") %>%
+    add_n(location = "level") %>%
+    bold_labels() %>%
+    italicize_levels()
+})
+tbl_stack(cox_mva_fct) %>%
+  modify_header(label ~ "**MVA <br>
+                set + refage + stage_cat + histo_grade**")
+  
 ```
 
 # IV. Interaction between Immune abundance and clustering
